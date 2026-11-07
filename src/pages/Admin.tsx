@@ -1,0 +1,11659 @@
+import { useState, useMemo, useEffect, useCallback, useRef } from "react";
+import { useAuth } from "@/hooks/useAuth";
+import { useLocation } from "wouter";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
+import { toast } from "sonner";
+import { formatINR } from "@/lib/currency";
+import { 
+  LayoutDashboard, Download, Store, Users, FileText, TrendingUp, Ban, CheckCircle, 
+  XCircle, Clock, Search, Shield, Star, ShoppingBag, Trash2, Eye, EyeOff,
+  ChevronDown, ChevronUp, Award, Building2, CreditCard, User, AlertCircle,
+  Flag, BarChart2, LogOut, Menu, X, Package, RefreshCw, Bell, BellRing, Send,
+  ImageIcon, Plus, Edit2, Tag, Loader2, HelpCircle, MessageSquare, Flame, Coffee, ArrowUpDown, Home, Mail,
+  Layers, GripVertical, ToggleLeft, ToggleRight, Grid2X2, ScrollText, MapPin, Truck, Bike, List, Phone,
+  UserCheck, Gift, QrCode, Upload, Palette, LayoutGrid, Smartphone, Cake, Wrench,
+  type LucideIcon,
+} from "lucide-react";
+import { generateShopSticker } from "@/lib/shopSticker";
+import { downloadPickupSticker, printPickupSticker } from "@/lib/pickupSticker";
+import { categories } from "@/data/categories";
+import { GROCERY_SUBCAT_OPTIONS as GROCERY_SUBCAT_OPTIONS_ADMIN } from "@/data/grocerySubcats";
+import { VendorApplication, VendorStatus, AdminCustomer, PlatformOrder, Report, TransactionLog, Vendor } from "@/types";
+import { useShops } from "@/hooks/useShops";
+import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { motion, AnimatePresence } from "framer-motion";
+import { api } from "@/lib/api";
+import { mockBanners, mockSeasonalCampaign, mockCafeConfig } from "@/lib/mockAdminData";
+
+interface ApiShop {
+  _id: string;
+  shopName: string;
+  ownerName: string;
+  phone: string;
+  shopType: string;
+  description?: string;
+  image?: string;
+  panNumber: string;
+  gstNumber?: string;
+  bankAccountHolderName?: string;
+  bankAccountNumber: string;
+  bankIfscCode: string;
+  upiId?: string;
+  status: 'pending' | 'approved' | 'rejected' | 'banned';
+  rejectionReason?: string;
+  certificateType?: string;
+  certificateNumber?: string;
+  certificateExpiryDate?: string;
+  certificateFile?: string;
+  certificateStatus?: string;
+  certificateRejectReason?: string;
+  verificationStatus?: string;
+  createdAt: string;
+  totalOrders: number;
+  totalRevenue: number;
+  rating: number;
+  address?: { line1?: string; city?: string; pincode?: string };
+  isOpen?: boolean;
+}
+
+interface ApiUser {
+  _id: string;
+  name: string;
+  phone: string;
+  email?: string;
+  hasPassword?: boolean;
+  role: string;
+  status: string;
+  createdAt: string;
+  lastSeenAt?: string;
+  lastLoginSource?: string;
+  isOnline?: boolean;
+  addresses?: Array<{ id?: string; label?: string; line1?: string; line2?: string; city?: string; pincode?: string }>;
+}
+
+interface ApiOrder {
+  _id: string;
+  customerId: string;
+  customerName?: string;
+  customerPhone?: string;
+  shopId?: string;
+  shopName?: string;
+  items: {
+    productName: string;
+    name?: string;
+    qty: number;
+    price: number;
+    selectedGrams?: number;
+    selectedWeight?: string;
+    variantPrice?: number;
+    totalPrice?: number;
+  }[];
+  netAmount?: number;
+  subtotal?: number;
+  status: string;
+  paymentMethod?: string;
+  paymentStatus?: string;
+  deliveryType?: string;
+  deliveryPartnerId?: string;
+  riderName?: string;
+  riderPhone?: string;
+  riderPhotoUrl?: string;
+  deliveryPartner?: {
+    id?: string;
+    name?: string;
+    phone?: string;
+    photoUrl?: string;
+    vehicle?: string;
+    currentLat?: number;
+    currentLon?: number;
+  };
+  createdAt: string;
+  updatedAt?: string;
+  address?: { label?: string; line1?: string; city?: string; pincode?: string };
+}
+
+interface ActivePartner {
+  _id: string;
+  name: string;
+  phone: string;
+  vehicle?: string;
+  isAvailable: boolean;
+  status: string;
+}
+
+interface AdminStats {
+  totalUsers: number;
+  totalShops: number;
+  pendingShops: number;
+  totalOrders: number;
+  pendingOrders: number;
+  totalRevenue: number;
+  totalCommission: number;
+}
+
+
+function buildDaySeries(orders: ApiOrder[]) {
+  const now = new Date();
+  return Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(now);
+    d.setDate(d.getDate() - (6 - i));
+    const label = d.toLocaleDateString('en-US', { weekday: 'short' });
+    const startMs = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const endMs = startMs + 86400000 - 1;
+    const dayOrders = orders.filter(o => { const t = new Date(o.createdAt).getTime(); return t >= startMs && t <= endMs; });
+    const revenue = dayOrders.reduce((s, o) => s + (o.netAmount ?? o.subtotal ?? 0), 0);
+    return { date: label, revenue, orders: dayOrders.length };
+  });
+}
+
+
+type AdminSection = 'overview' | 'requests' | 'shops' | 'shops-map' | 'users' | 'orders' | 'custom-cakes' | 'service-corner' | 'reports' | 'analytics' | 'transactions' | 'notifications' | 'hero-banners' | 'coupons' | 'commissions' | 'shop-types' | 'payouts' | 'categories' | 'product-approvals' | 'support' | 'trending-products' | 'delivery-charges' | 'home-sections' | 'buckets' | 'service-areas' | 'delivery-partners' | 'fleet-map' | 'managers' | 'seasonal-campaign' | 'cafe-config' | 'theme-config' | 'app-home-builder' | 'app-superstore-builder' | 'app-cafe-builder' | 'riders' | 'whatsapp';
+
+import { SEO } from "@/components/SEO";
+import FleetMapTab from "@/components/FleetMapTab";
+import ShopsMapTab from "@/components/ShopsMapTab";
+import { ThemeConfigTab } from "./admin/ThemeConfigTab";
+import { LayoutBuilderTab } from "./admin/LayoutBuilderTab";
+import { AdminCustomCakesTab } from "./admin/AdminCustomCakesTab";
+import { AdminServiceCornerTab } from "./admin/AdminServiceCornerTab";
+import { WhatsAppTab } from "./admin/WhatsAppTab";
+import ModernExptDashboard from "@/components/ModernExptDashboard";
+import SidebarShopperBanner from "@/components/SidebarShopperBanner";
+
+export default function Admin() {
+  const [activeSection, setActiveSection] = useState<AdminSection>('overview');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { logout } = useAuth();
+  const [, setLocation] = useLocation();
+
+  const handleLogout = () => {
+    logout();
+    setLocation("/");
+  };
+
+  return (
+    <div className="min-h-[100dvh] flex bg-[#0c0e14] text-white font-sans selection:bg-[#7b73fe] selection:text-white">
+      <SEO noIndex />
+      {/* Mobile Top Bar */}
+      <div className="md:hidden fixed top-0 left-0 right-0 h-16 bg-[#131620] border-b border-white/[0.06] z-50 flex items-center justify-between px-4">
+        <button onClick={() => setMobileMenuOpen(true)} className="p-2 -ml-2 text-white">
+          <Menu className="w-6 h-6" />
+        </button>
+        <div className="flex items-center gap-2">
+          <div className="w-7 h-7 rounded-xl bg-gradient-to-tr from-[#6366f1] to-[#a855f7] flex items-center justify-center font-bold text-xs">
+            EXPT
+          </div>
+          <span className="font-extrabold text-white text-base">EXPT</span>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="w-8 h-8 rounded-full overflow-hidden border border-white/20">
+            <img 
+              src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&q=80" 
+              alt="Admin" 
+              className="w-full h-full object-cover"
+            />
+          </div>
+        </div>
+      </div>
+
+      {/* Sidebar Overlay (Mobile) */}
+      <AnimatePresence>
+        {mobileMenuOpen && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="md:hidden fixed inset-0 bg-black/70 backdrop-blur-sm z-50"
+              onClick={() => setMobileMenuOpen(false)}
+            />
+            <motion.div 
+              initial={{ x: "-100%" }} animate={{ x: 0 }} exit={{ x: "-100%" }} transition={{ type: "tween", bounce: 0, duration: 0.3 }}
+              className="md:hidden fixed top-0 left-0 bottom-0 w-72 bg-[#12141d] z-50 flex flex-col border-r border-white/[0.06]"
+            >
+              <SidebarContent activeSection={activeSection} setActiveSection={(s) => { setActiveSection(s); setMobileMenuOpen(false); }} handleLogout={handleLogout} />
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Desktop Sidebar (matching reference image) */}
+      <div className="hidden md:flex w-64 lg:w-72 h-screen shrink-0 bg-[#12141d] border-r border-white/[0.06] flex-col sticky top-0 overflow-hidden">
+        <SidebarContent activeSection={activeSection} setActiveSection={setActiveSection} handleLogout={handleLogout} />
+      </div>
+
+      {/* Main Content Area */}
+      <div className="flex-1 h-[100dvh] overflow-y-auto pt-20 md:pt-4 bg-[#0c0e14] px-4 md:px-8 pb-10">
+        <div className="max-w-[1400px] mx-auto">
+          
+          {/* Top Bar matching reference image */}
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 pb-6 pt-2 border-b border-white/[0.04] mb-8">
+            {/* Search Pill */}
+            <div className="relative w-full sm:w-80">
+              <Search className="w-4 h-4 text-[#656c82] absolute left-4 top-1/2 -translate-y-1/2" />
+              <input 
+                type="text" 
+                placeholder="Search anything... (Ctrl + K)" 
+                className="w-full pl-11 pr-4 py-2.5 bg-[#171a23] border border-white/[0.07] rounded-full text-xs text-white placeholder:text-[#656c82] focus:outline-none focus:border-[#8e85fe] transition-all shadow-inner"
+              />
+            </div>
+
+            {/* Actions & Profile Pill */}
+            <div className="flex items-center gap-3.5 self-end sm:self-auto">
+              {/* Export report button */}
+              <button 
+                onClick={() => toast.success("Exporting full analytics report...")}
+                className="flex items-center gap-2 text-xs font-semibold text-[#b8bfd3] hover:text-white px-3.5 py-2.5 rounded-xl bg-[#171a23] border border-white/[0.07] hover:border-white/[0.14] transition-all"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span className="hidden md:inline">Export report</span>
+              </button>
+
+              {/* Message Alert */}
+              <div 
+                onClick={() => setActiveSection('whatsapp')}
+                className="relative cursor-pointer p-2.5 rounded-xl bg-[#171a23] border border-white/[0.07] text-[#b8bfd3] hover:text-white hover:border-white/[0.14] transition-all"
+                title="Conversations & Messages"
+              >
+                <MessageSquare className="w-4 h-4" />
+                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-emerald-500 text-slate-950 font-extrabold text-[10px] flex items-center justify-center shadow-sm">
+                  1
+                </span>
+              </div>
+
+              {/* Bell Alert */}
+              <div 
+                onClick={() => setActiveSection('notifications')}
+                className="relative cursor-pointer p-2.5 rounded-xl bg-[#171a23] border border-white/[0.07] text-[#b8bfd3] hover:text-white hover:border-white/[0.14] transition-all"
+                title="Notifications"
+              >
+                <Bell className="w-4 h-4" />
+                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-500 text-slate-950 font-extrabold text-[10px] flex items-center justify-center shadow-sm">
+                  2
+                </span>
+              </div>
+
+              {/* User Profile Pill */}
+              <div className="flex items-center gap-3 pl-2 pr-2.5 py-1.5 rounded-full bg-[#171a23] border border-white/[0.07] cursor-pointer hover:border-white/[0.14] transition-all">
+                <img 
+                  src="https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=120&q=80" 
+                  alt="Ridam Mahanta" 
+                  className="w-7 h-7 rounded-full object-cover border border-[#8e85fe]/30"
+                />
+                <div className="text-left hidden lg:block">
+                  <div className="text-xs font-bold text-white leading-tight">Ridam Mahanta</div>
+                  <div className="text-[10px] text-[#7e859a] leading-tight font-medium">Admin</div>
+                </div>
+                <ChevronDown className="w-3.5 h-3.5 text-[#7e859a]" />
+              </div>
+            </div>
+          </div>
+
+          {/* Active Section Content */}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={activeSection}
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.2 }}
+            >
+              {activeSection === 'overview' && <ModernExptDashboard onNavigateTab={(tab) => setActiveSection(tab as AdminSection)} />}
+              {activeSection === 'requests' && <ShopRequestsTab />}
+              {activeSection === 'shops' && <ShopsManagementTab />}
+              {activeSection === 'shops-map' && <ShopsMapTab />}
+              {activeSection === 'users' && <UsersTab />}
+              {activeSection === 'orders' && <OrdersTab onNavigate={setActiveSection} />}
+              {activeSection === 'custom-cakes' && <AdminCustomCakesTab />}
+              {activeSection === 'service-corner' && <AdminServiceCornerTab />}
+              {activeSection === 'reports' && <ReportsTab />}
+              {activeSection === 'analytics' && <AnalyticsTab />}
+              {activeSection === 'transactions' && <TransactionsTab />}
+              {activeSection === 'notifications' && <AdminNotificationsTab />}
+              {activeSection === 'hero-banners' && <HeroBannersTab />}
+              {activeSection === 'coupons' && <CouponsTab />}
+              {activeSection === 'product-approvals' && <ProductApprovalsTab />}
+              {activeSection === 'trending-products' && <TrendingProductsTab />}
+              {activeSection === 'commissions' && <CommissionsTab />}
+              {activeSection === 'shop-types' && <ShopTypesTab />}
+              {activeSection === 'categories' && <CategoriesTab />}
+              {activeSection === 'payouts' && <PayoutsTab />}
+              {activeSection === 'support' && <SupportTicketsTab />}
+              {activeSection === 'delivery-charges' && <DeliveryChargesTab />}
+              {activeSection === 'home-sections' && <HomepageSectionsTab />}
+              {activeSection === 'buckets' && <BucketsTab />}
+              {activeSection === 'service-areas' && <ServiceAreasTab />}
+              {activeSection === 'delivery-partners' && <RidersSectionTab />}
+              {activeSection === 'riders' && <RidersSectionTab />}
+              {activeSection === 'fleet-map' && <FleetMapTab />}
+              {activeSection === 'managers' && <ManagersTab />}
+              {activeSection === 'seasonal-campaign' && <SeasonalCampaignTab />}
+              {activeSection === 'cafe-config' && <CafePageConfigTab />}
+              {activeSection === 'theme-config' && <ThemeConfigTab />}
+              {activeSection === 'app-home-builder' && (
+                <LayoutBuilderTab
+                  fixedPage="home"
+                  title="Home Page App — SDUI Decorator"
+                  subtitle="Decorate and arrange home page dynamic banners, category grids, daily regulars, and shoppable recipes for the StockFlow Mobile App"
+                />
+              )}
+              {activeSection === 'app-superstore-builder' && (
+                <LayoutBuilderTab
+                  fixedPage="super_store"
+                  title="Super Store App — SDUI Decorator"
+                  subtitle="Decorate and arrange super store tab categories, product carousels, and promotional strips for the StockFlow Mobile App"
+                />
+              )}
+              {activeSection === 'app-cafe-builder' && (
+                <LayoutBuilderTab
+                  fixedPage="cafe"
+                  title="Cafe & Food App — SDUI Decorator"
+                  subtitle="Decorate and arrange cafe & food tab banners, weather cravings, hot deals, and recipe blocks for the StockFlow Mobile App"
+                />
+              )}
+              {activeSection === 'whatsapp' && <WhatsAppTab />}
+            </motion.div>
+          </AnimatePresence>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SidebarContent({ activeSection, setActiveSection, handleLogout }: { activeSection: AdminSection, setActiveSection: (s: AdminSection) => void, handleLogout: () => void }) {
+  const [, navigate] = useLocation();
+  const [pendingRequests, setPendingRequests] = useState(0);
+  const [pendingOrders, setPendingOrders] = useState(0);
+  const [pendingRiders, setPendingRiders] = useState(0);
+  const [pendingCustomCakes, setPendingCustomCakes] = useState(0);
+  const [pendingServices, setPendingServices] = useState(0);
+  const { reports, user } = useAuth();
+  const openReports = reports.filter(r => r.status === 'open').length;
+  const [storeDropdownOpen, setStoreDropdownOpen] = useState(false);
+  const [currentStore, setCurrentStore] = useState("StockFlow Central");
+
+  useEffect(() => {
+    api.get<{ success: boolean; stats: { pendingShops: number; pendingOrders: number } }>('/admin/stats')
+      .then(d => {
+        setPendingRequests(d.stats?.pendingShops ?? 3);
+        setPendingOrders(d.stats?.pendingOrders ?? 5);
+      })
+      .catch(() => {});
+    api.get<{ success: boolean; applications: any[] }>('/admin/riders/applications?status=pending')
+      .then(d => setPendingRiders((d.applications ?? []).length))
+      .catch(() => {});
+    api.get<{ success: boolean; stats?: { requested: number; confirmed: number } }>('/custom-cakes/admin/all')
+      .then(d => {
+        if (d.stats) setPendingCustomCakes((d.stats.requested || 0) + (d.stats.confirmed || 0));
+      })
+      .catch(() => {});
+    api.get<{ success: boolean; statusCounts?: { requested: number } }>('/services/admin/bookings?status=requested')
+      .then(d => {
+        if (d.statusCounts) setPendingServices(d.statusCounts.requested || 0);
+      })
+      .catch(() => {});
+  }, []);
+
+  const navGroups: {
+    title: string;
+    items: { id: AdminSection; label: string; icon: LucideIcon; badge?: number }[];
+  }[] = [
+    {
+      title: "Core & Overview",
+      items: [
+        { id: 'overview', label: 'Dashboard', icon: LayoutDashboard },
+        { id: 'requests', label: 'Shop Requests', icon: FileText, badge: pendingRequests },
+        { id: 'shops', label: 'Shops & Stores', icon: Store },
+        { id: 'shops-map', label: 'Shops Map', icon: MapPin },
+        { id: 'orders', label: 'Orders Dispatch', icon: ShoppingBag, badge: pendingOrders },
+        { id: 'product-approvals', label: 'Products Catalog', icon: Package },
+        { id: 'trending-products', label: 'Trending Manager', icon: Flame },
+        { id: 'users', label: 'Audience / Users', icon: Users },
+      ]
+    },
+    {
+      title: "Logistics & Delivery",
+      items: [
+        { id: 'riders', label: 'Riders & Fleet', icon: Truck, badge: pendingRiders },
+        { id: 'fleet-map', label: 'Fleet Map (Live)', icon: MapPin },
+        { id: 'custom-cakes', label: 'Custom Cakes', icon: Cake, badge: pendingCustomCakes },
+        { id: 'service-corner', label: 'Service Corner', icon: Wrench, badge: pendingServices },
+        { id: 'delivery-charges', label: 'Delivery Charges', icon: Package },
+        { id: 'service-areas', label: 'Service Areas', icon: MapPin },
+      ]
+    },
+    {
+      title: "Analytics & Finance",
+      items: [
+        { id: 'analytics', label: 'Analytics', icon: BarChart2 },
+        { id: 'transactions', label: 'Statistics & Trans.', icon: TrendingUp },
+        { id: 'payouts', label: 'Billing & Payouts', icon: CreditCard },
+        { id: 'commissions', label: 'Commissions', icon: Award },
+      ]
+    },
+    {
+      title: "Catalog & Marketing",
+      items: [
+        { id: 'coupons', label: 'Coupons & Offers', icon: Tag },
+        { id: 'hero-banners', label: 'Hero Banners', icon: ImageIcon },
+        { id: 'home-sections', label: 'Home Sections', icon: Layers },
+        { id: 'buckets', label: 'Bucket Packages', icon: Gift },
+        { id: 'categories', label: 'Categories', icon: Tag },
+        { id: 'shop-types', label: 'Shop Types', icon: Building2 },
+        { id: 'seasonal-campaign', label: 'Seasonal Campaign', icon: Flame },
+        { id: 'cafe-config', label: 'Cafe Manager', icon: Coffee },
+      ]
+    },
+    {
+      title: "App SDUI Builders",
+      items: [
+        { id: 'app-home-builder', label: 'Home Page App', icon: Smartphone },
+        { id: 'app-superstore-builder', label: 'Super Store App', icon: Store },
+        { id: 'app-cafe-builder', label: 'Cafe & Food App', icon: Coffee },
+      ]
+    },
+    {
+      title: "Communication & Settings",
+      items: [
+        { id: 'whatsapp', label: 'WhatsApp Alerts', icon: MessageSquare },
+        { id: 'notifications', label: 'Notifications', icon: Bell },
+        { id: 'reports', label: 'Flagged Reports', icon: Flag, badge: openReports },
+        { id: 'support', label: 'Support Tickets', icon: HelpCircle },
+        { id: 'managers', label: 'City Managers', icon: Shield },
+        { id: 'theme-config', label: 'Theme & Settings', icon: Palette },
+      ]
+    }
+  ];
+
+  return (
+    <div className="flex flex-col h-full overflow-hidden select-none">
+      {/* Brand Header */}
+      <div className="p-5 pb-3">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-2xl bg-gradient-to-tr from-[#6366f1] to-[#8e85fe] flex items-center justify-center text-white shadow-lg shadow-[#6366f1]/35 font-extrabold text-xs tracking-wider">
+            EXPT
+          </div>
+          <span className="text-xl font-extrabold tracking-tight text-white">EXPT</span>
+        </div>
+      </div>
+
+      {/* Store Switcher Dropdown */}
+      <div className="px-4 mb-3 relative">
+        <button 
+          onClick={() => setStoreDropdownOpen(!storeDropdownOpen)}
+          className="w-full flex items-center justify-between px-3.5 py-2 rounded-xl bg-[#171a24] border border-white/[0.08] text-xs font-semibold text-[#cfd4e2] hover:border-white/[0.16] transition-all"
+        >
+          <span>{currentStore}</span>
+          <ChevronDown className="w-4 h-4 text-[#8e94a8]" />
+        </button>
+
+        {storeDropdownOpen && (
+          <div className="absolute top-11 left-4 right-4 bg-[#171a24] border border-white/[0.12] rounded-xl shadow-2xl z-50 py-1.5 backdrop-blur-md">
+            {["Expert Store", "Balurghat Main Hub", "North Express Hub"].map(s => (
+              <div 
+                key={s} 
+                onClick={() => { setCurrentStore(s); setStoreDropdownOpen(false); }}
+                className="px-3.5 py-2 text-xs text-[#cfd4e2] hover:bg-white/[0.06] cursor-pointer hover:text-white"
+              >
+                {s}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Main Navigation Scroll Area with ALL items */}
+      <div className="flex-1 overflow-y-auto px-3 space-y-4 scrollbar-thin scrollbar-thumb-white/10 pb-4">
+        {navGroups.map((group, gIdx) => (
+          <div key={group.title} className="space-y-1">
+            <div className="px-3 py-1 text-[10px] uppercase font-bold text-[#5a627a] tracking-wider">
+              {group.title}
+            </div>
+            {group.items.map(item => {
+              const isActive = activeSection === item.id;
+              return (
+                <button
+                  key={item.id}
+                  onClick={() => setActiveSection(item.id)}
+                  className={`w-full flex items-center justify-between px-3.5 py-2 rounded-[12px] text-xs transition-all ${
+                    isActive 
+                      ? 'bg-gradient-to-r from-[#6964fe] to-[#8d85fe] text-white font-semibold shadow-md shadow-[#6964fe]/30' 
+                      : 'text-[#8a91a4] hover:text-white hover:bg-white/[0.04] font-medium'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <item.icon className={`w-4 h-4 ${isActive ? 'text-white' : 'opacity-80'}`} />
+                    <span className="truncate">{item.label}</span>
+                  </div>
+                  {!!item.badge && item.badge > 0 && (
+                    <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded-full ${
+                      isActive ? 'bg-white text-indigo-700' : 'bg-[#8e85fe] text-slate-950'
+                    }`}>
+                      {item.badge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ))}
+      </div>
+
+      {/* Shopper Cartoon Banner Card at Bottom */}
+      <SidebarShopperBanner />
+    </div>
+  );
+}
+
+// ============================================================================
+
+function OverviewTab({ onNavigate }: { onNavigate: (s: AdminSection) => void }) {
+  const { reports } = useAuth();
+  const { allShops: shops } = useShops();
+  const [adminStats, setAdminStats] = useState<AdminStats | null>(null);
+  const [recentOrders, setRecentOrders] = useState<ApiOrder[]>([]);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+
+  const loadOverview = useCallback(() => {
+    setOverviewLoading(true);
+    Promise.all([
+      api.get<{ success: boolean; stats: AdminStats }>('/admin/stats').then(d => setAdminStats(d.stats)).catch(() => {}),
+      api.get<{ success: boolean; orders: ApiOrder[] }>('/orders?status=delivered&limit=200').then(d => setRecentOrders(d.orders)).catch(() => {}),
+    ]).finally(() => setOverviewLoading(false));
+  }, []);
+
+  useEffect(() => { loadOverview(); }, [loadOverview]);
+
+  const weekRevData = useMemo(() => buildDaySeries(recentOrders), [recentOrders]);
+  const totalRevenue = adminStats?.totalRevenue ?? 0;
+  const platformComm = adminStats?.totalCommission ?? 0;
+  const activeShopsCount = adminStats?.totalShops ?? shops.length;
+  const totalUsers = adminStats?.totalUsers ?? 0;
+  const totalOrdersCount = adminStats?.totalOrders ?? 0;
+  const openReports = reports.filter(r => r.status === 'open').length;
+
+  const topShops = useMemo(() => [...shops].sort((a, b) => (b.totalRevenue || 0) - (a.totalRevenue || 0)).slice(0, 3), [shops]);
+
+  const formatLargeValue = (val: number) => {
+    if (val >= 100000) return `₹${(val / 100000).toFixed(2)}L`;
+    return formatINR(val);
+  };
+
+  const recentActivity = useMemo(() => {
+    const activities: { id: string; type: string; icon: any; title: string; desc: string; time: string; color: string; bg: string }[] = [];
+    const timeAgo = (dateStr: string) => {
+      const ms = Date.now() - new Date(dateStr).getTime();
+      const mins = Math.floor(ms / 60000);
+      if (mins < 60) return `${mins}m ago`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs}h ago`;
+      return `${Math.floor(hrs / 24)}d ago`;
+    };
+    [...recentOrders].slice(0, 2).forEach((o, i) => {
+      activities.push({ id: `ord-${i}`, type: 'order', icon: ShoppingBag, title: 'New order placed', desc: `#${o._id.slice(-6).toUpperCase()} at ${o.shopName ?? 'shop'}`, time: timeAgo(o.createdAt), color: 'text-blue-500', bg: 'bg-blue-50 dark:bg-blue-950/20' });
+    });
+    reports.filter(r => r.status === 'open').slice(0, 1).forEach((r, i) => {
+      activities.push({ id: `rep-${i}`, type: 'report', icon: Flag, title: 'New report opened', desc: `Regarding ${r.targetName}`, time: timeAgo(r.reportedAt), color: 'text-red-500', bg: 'bg-red-50 dark:bg-red-950/20' });
+    });
+    return activities.slice(0, 5);
+  }, [recentOrders, reports, shops]);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold text-foreground">Overview</h2>
+        <button onClick={loadOverview} disabled={overviewLoading} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium bg-card neu-card text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
+          <RefreshCw className={`w-4 h-4 ${overviewLoading ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <StatCard title="Total Revenue" value={formatLargeValue(totalRevenue)} icon={TrendingUp} color="text-green-600" />
+        <StatCard title="Platform Commission" value={formatLargeValue(platformComm)} icon={Award} color="text-amber-600" />
+        <StatCard title="Active Shops" value={activeShopsCount} icon={Store} color="text-blue-600" />
+        <StatCard title="Total Customers" value={totalUsers} icon={Users} color="text-purple-600" />
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <StatCard title="Delivered Orders" value={totalOrdersCount} icon={ShoppingBag} color="text-indigo-600" />
+        <StatCard title="Open Reports" value={openReports} icon={Flag} color="text-red-600" />
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+        <Button onClick={() => onNavigate('requests')} variant="outline" className="rounded-full bg-card neu-inset border-none text-foreground"><FileText className="w-4 h-4 mr-2 text-primary" /> View Pending Requests</Button>
+        <Button onClick={() => onNavigate('reports')} variant="outline" className="rounded-full bg-card neu-inset border-none text-foreground"><Flag className="w-4 h-4 mr-2 text-red-500" /> View Open Reports</Button>
+        <Button onClick={() => onNavigate('orders')} variant="outline" className="rounded-full bg-card neu-inset border-none text-foreground"><ShoppingBag className="w-4 h-4 mr-2 text-blue-500" /> View Orders</Button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="md:col-span-2 bg-card p-6 rounded-3xl neu-card">
+          <h3 className="text-lg font-bold text-foreground mb-4">Revenue This Week</h3>
+          <div className="h-[300px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={weekRevData} margin={{ top: 10, right: 10, left: 0, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="colorRev" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fill: 'hsl(var(--muted-foreground))', fontSize: 12}} dy={10} />
+                <YAxis axisLine={false} tickLine={false} tick={{fill: 'hsl(var(--muted-foreground))', fontSize: 12}} tickFormatter={(v) => `₹${v/1000}k`} />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: 'hsl(var(--card))', borderRadius: '12px', border: '1px solid hsl(var(--border))', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                  itemStyle={{ color: 'hsl(var(--foreground))' }}
+                  labelStyle={{ color: 'hsl(var(--muted-foreground))', marginBottom: '4px' }}
+                />
+                <Area type="monotone" dataKey="revenue" name="Revenue" stroke="hsl(var(--primary))" strokeWidth={3} fillOpacity={1} fill="url(#colorRev)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="space-y-6">
+          <div className="bg-card p-6 rounded-3xl neu-card">
+            <h3 className="text-lg font-bold text-foreground mb-4">Top Performing Shops</h3>
+            <div className="space-y-4">
+              {topShops.map((shop, i) => (
+                <div key={shop.id} className="flex items-center gap-3">
+                  <div className="relative">
+                    <img src={shop.image} alt={shop.storeName} className="w-10 h-10 rounded-full object-cover bg-muted" />
+                    <div className={`absolute -top-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white border-2 border-card ${
+                      i === 0 ? 'bg-amber-400' : i === 1 ? 'bg-slate-400' : 'bg-amber-700'
+                    }`}>
+                      {i + 1}
+                    </div>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-foreground truncate">{shop.storeName}</p>
+                    <p className="text-xs text-muted-foreground truncate">{shop.category}</p>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-bold text-foreground">{formatLargeValue(shop.totalRevenue || 0)}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-card p-6 rounded-3xl neu-card">
+            <h3 className="text-lg font-bold text-foreground mb-4">Recent Activity</h3>
+            {recentActivity.length === 0 ? (
+              <div className="text-center py-6 text-muted-foreground text-sm">
+                <RefreshCw className="w-8 h-8 mx-auto mb-2 opacity-20" />
+                <p>No recent activity yet</p>
+              </div>
+            ) : (
+              <div className="space-y-4 relative before:absolute before:inset-0 before:ml-4 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-border before:to-transparent hidden-before">
+                {recentActivity.map((activity) => (
+                  <div key={activity.id} className="flex gap-3 relative z-10">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${activity.bg} ${activity.color}`}>
+                      <activity.icon className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-medium text-foreground">{activity.title}</p>
+                      <p className="text-xs text-muted-foreground">{activity.desc}{activity.time ? ` · ${activity.time}` : ''}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+interface StatCardProps {
+  title: string;
+  value: string | number;
+  icon: LucideIcon;
+  color: string;
+}
+function StatCard({ title, value, icon: Icon, color }: StatCardProps) {
+  return (
+    <div className="bg-card p-4 md:p-6 rounded-2xl md:rounded-3xl neu-card flex flex-col gap-2">
+      <div className="flex justify-between items-start">
+        <p className="text-xs md:text-sm font-medium text-muted-foreground">{title}</p>
+        <Icon className={`w-5 h-5 ${color} opacity-80`} />
+      </div>
+      <p className="text-2xl md:text-3xl font-bold text-foreground">{value}</p>
+    </div>
+  );
+}
+
+// ============================================================================
+// SHOP REQUESTS SECTION
+// ============================================================================
+
+const CERT_NAMES: Record<string, string> = {
+  fssai: "FSSAI License",
+  drug_license: "Drug License",
+};
+
+function ShopRequestsTab() {
+  const [shops, setShops] = useState<ApiShop[]>([]);
+  const [loadingShops, setLoadingShops] = useState(true);
+  const [filter, setFilter] = useState<'all' | 'pending' | 'approved' | 'rejected'>('all');
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [certRejectingId, setCertRejectingId] = useState<string | null>(null);
+  const [certRejectReason, setCertRejectReason] = useState("");
+
+  const fetchShops = () => {
+    setLoadingShops(true);
+    api.get<{ success: boolean; shops: ApiShop[] }>('/shops?limit=100')
+      .then(d => setShops(d.shops))
+      .catch(() => setShops([]))
+      .finally(() => setLoadingShops(false));
+  };
+
+  useEffect(() => { fetchShops(); }, []);
+
+  const applications = (Array.isArray(shops) ? shops : []).map(s => ({
+    id: s._id || (s as any).id || "",
+    userId: s._id || (s as any).id || "",
+    userName: s.ownerName || "Vendor",
+    userPhone: s.phone || "",
+    storeName: s.shopName || "Unnamed Store",
+    storeCategory: ((s.shopType || "grocery") as VendorApplication['storeCategory']),
+    storeDescription: s.description ?? "",
+    ownerName: s.ownerName || "Vendor Owner",
+    panNumber: s.panNumber || "—",
+    gstNumber: s.gstNumber ?? "",
+    bankAccountNumber: s.bankAccountNumber || "—",
+    bankIfscCode: s.bankIfscCode || "—",
+    upiId: s.upiId || "",
+    submittedAt: s.createdAt || new Date().toISOString(),
+    status: (s.status === 'banned' ? 'rejected' : (s.status || 'pending')) as VendorApplication['status'],
+    rejectionReason: s.rejectionReason,
+  }));
+
+  const filteredApplications = applications.filter(app => filter === 'all' || app.status === filter);
+  const pendingCount = applications.filter(a => a.status === 'pending').length;
+  const approvedCount = applications.filter(a => a.status === 'approved').length;
+  const rejectedCount = applications.filter(a => a.status === 'rejected').length;
+
+  const handleApprove = async (id: string) => {
+    try {
+      await api.post(`/shops/${id}/approve`);
+      toast.success("Application approved");
+      fetchShops();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to approve");
+    }
+  };
+
+  const handleReject = async (id: string) => {
+    if (!rejectReason.trim()) { toast.error("Please provide a reason for rejection"); return; }
+    try {
+      await api.post(`/shops/${id}/reject`, { reason: rejectReason });
+      setRejectingId(null);
+      setRejectReason("");
+      toast.success("Application rejected");
+      fetchShops();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to reject");
+    }
+  };
+
+  const handleVerify = async (id: string) => {
+    setVerifyingId(id);
+    try {
+      await api.post(`/shops/${id}/verify`);
+      toast.success("Vendor compliance verified");
+      fetchShops();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to verify");
+    } finally {
+      setVerifyingId(null);
+    }
+  };
+
+  const handleRejectCert = async (id: string) => {
+    if (!certRejectReason.trim()) { toast.error("Please provide a rejection reason"); return; }
+    try {
+      await api.post(`/shops/${id}/reject-certificate`, { reason: certRejectReason });
+      setCertRejectingId(null);
+      setCertRejectReason("");
+      toast.success("Certificate rejected — vendor notified");
+      fetchShops();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to reject certificate");
+    }
+  };
+
+  if (loadingShops) {
+    return (
+      <div className="space-y-4">
+        <div className="h-8 w-48 bg-muted rounded-xl animate-pulse" />
+        {[1,2,3].map(i => <div key={i} className="h-40 bg-muted rounded-3xl animate-pulse" />)}
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-3">
+        <h2 className="text-2xl font-bold text-foreground">Shop Requests</h2>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="bg-card p-4 rounded-2xl neu-card text-center">
+          <div className="text-2xl font-bold text-foreground">{applications.length}</div>
+          <div className="text-xs text-muted-foreground">Total Apps</div>
+        </div>
+        <div className="bg-amber-50 dark:bg-amber-950/20 p-4 rounded-2xl neu-card text-center border border-amber-200 dark:border-amber-900/50">
+          <div className="text-2xl font-bold text-amber-600 dark:text-amber-500">{pendingCount}</div>
+          <div className="text-xs text-amber-700 dark:text-amber-400">Pending</div>
+        </div>
+        <div className="bg-green-50 dark:bg-green-950/20 p-4 rounded-2xl neu-card text-center border border-green-200 dark:border-green-900/50">
+          <div className="text-2xl font-bold text-green-600 dark:text-green-500">{approvedCount}</div>
+          <div className="text-xs text-green-700 dark:text-green-400">Approved</div>
+        </div>
+        <div className="bg-red-50 dark:bg-red-950/20 p-4 rounded-2xl neu-card text-center border border-red-200 dark:border-red-900/50">
+          <div className="text-2xl font-bold text-red-600 dark:text-red-500">{rejectedCount}</div>
+          <div className="text-xs text-red-700 dark:text-red-400">Rejected</div>
+        </div>
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+        {(['all', 'pending', 'approved', 'rejected'] as const).map(f => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`px-4 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all ${
+              filter === f 
+                ? 'bg-primary text-primary-foreground neu-card' 
+                : 'bg-background text-muted-foreground neu-inset'
+            }`}
+          >
+            {f.charAt(0).toUpperCase() + f.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      <div className="space-y-4">
+        {filteredApplications.length === 0 ? (
+          <div className="text-center p-12 bg-card rounded-3xl neu-inset text-muted-foreground border border-dashed border-border/50">
+            <FileText className="w-12 h-12 mx-auto mb-4 opacity-20" />
+            <p>No applications found</p>
+          </div>
+        ) : (
+          filteredApplications.map(app => {
+            const rawShop = shops.find(s => s._id === app.id);
+            const certName = rawShop?.certificateType ? (CERT_NAMES[rawShop.certificateType] ?? rawShop.certificateType) : null;
+            return (
+            <div key={app.id} className="bg-card p-6 rounded-3xl neu-card space-y-4">
+              <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
+                <div className="flex items-start gap-3">
+                  {rawShop?.image ? (
+                    <img src={rawShop.image} alt={app.storeName} className="w-14 h-14 rounded-2xl object-cover bg-muted shrink-0 neu-card" />
+                  ) : (
+                    <div className="w-14 h-14 rounded-2xl bg-muted neu-inset flex items-center justify-center shrink-0 text-2xl">🏪</div>
+                  )}
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="font-bold text-xl text-foreground">{app.storeName}</h3>
+                      <Badge variant="secondary" className="bg-background neu-inset text-xs border-none capitalize">
+                        {(app.storeCategory ? String(app.storeCategory).replace(/-/g, ' ') : 'General')}
+                      </Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground flex items-center gap-2">
+                      <User className="w-4 h-4" /> {app.ownerName}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Applied: {app.submittedAt ? new Date(app.submittedAt).toLocaleDateString() : 'N/A'}
+                    </p>
+                  </div>
+                </div>
+                
+                <div className="flex flex-col gap-1.5 items-end">
+                  {app.status === 'pending' && <Badge className="bg-amber-100 text-amber-800 hover:bg-amber-100 neu-inset border-none px-3 py-1"><Clock className="w-3 h-3 mr-1" /> Pending</Badge>}
+                  {app.status === 'approved' && <Badge className="bg-green-100 text-green-800 hover:bg-green-100 neu-inset border-none px-3 py-1"><CheckCircle className="w-3 h-3 mr-1" /> Approved</Badge>}
+                  {app.status === 'rejected' && <Badge className="bg-red-100 text-red-800 hover:bg-red-100 neu-inset border-none px-3 py-1"><XCircle className="w-3 h-3 mr-1" /> Rejected</Badge>}
+                  {rawShop?.verificationStatus === 'verified' && <Badge className="bg-blue-100 text-blue-800 hover:bg-blue-100 neu-inset border-none px-3 py-1 text-xs"><Shield className="w-3 h-3 mr-1" /> Verified</Badge>}
+                  {rawShop?.verificationStatus === 'pending' && app.status === 'approved' && <Badge className="bg-gray-100 text-gray-600 hover:bg-gray-100 neu-inset border-none px-3 py-1 text-xs"><Clock className="w-3 h-3 mr-1" /> Unverified</Badge>}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-background p-4 rounded-2xl neu-inset">
+                <div className="space-y-2">
+                  <div className="text-sm font-semibold flex items-center gap-2 text-foreground">
+                    <Building2 className="w-4 h-4" /> KYC Details
+                  </div>
+                  <div className="text-sm grid grid-cols-[80px_1fr] gap-1">
+                    <span className="text-muted-foreground">PAN:</span>
+                    <span className="font-mono text-foreground">{app.panNumber}</span>
+                    {app.gstNumber && (
+                      <>
+                        <span className="text-muted-foreground">GST:</span>
+                        <span className="font-mono text-foreground">{app.gstNumber}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+                
+                <div className="space-y-2">
+                  <div className="text-sm font-semibold flex items-center gap-2 text-foreground">
+                    <CreditCard className="w-4 h-4" /> Bank Details
+                  </div>
+                  <div className="text-sm grid grid-cols-[80px_1fr] gap-1">
+                    {rawShop?.bankAccountHolderName && (
+                      <>
+                        <span className="text-muted-foreground">Holder:</span>
+                        <span className="text-foreground font-medium">{rawShop.bankAccountHolderName}</span>
+                      </>
+                    )}
+                    <span className="text-muted-foreground">Bank:</span>
+                    <span className="font-mono text-foreground">{app.bankAccountNumber}</span>
+                    <span className="text-muted-foreground">IFSC:</span>
+                    <span className="font-mono text-foreground">{app.bankIfscCode}</span>
+                    {app.upiId && (
+                      <>
+                        <span className="text-muted-foreground">UPI:</span>
+                        <span className="text-foreground">{app.upiId}</span>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {rawShop?.certificateType && (
+                <div className="bg-background p-4 rounded-2xl neu-inset space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-semibold flex items-center gap-2 text-foreground">
+                      <FileText className="w-4 h-4" /> {certName}
+                    </div>
+                    {rawShop.certificateStatus === 'verified' && <Badge className="bg-green-100 text-green-800 text-xs border-none neu-inset px-2 py-0.5"><CheckCircle className="w-3 h-3 mr-1 inline" />Verified</Badge>}
+                    {rawShop.certificateStatus === 'pending' && <Badge className="bg-amber-100 text-amber-800 text-xs border-none neu-inset px-2 py-0.5"><Clock className="w-3 h-3 mr-1 inline" />Pending review</Badge>}
+                    {rawShop.certificateStatus === 'rejected' && <Badge className="bg-red-100 text-red-800 text-xs border-none neu-inset px-2 py-0.5"><XCircle className="w-3 h-3 mr-1 inline" />Rejected</Badge>}
+                  </div>
+                  <div className="text-sm grid grid-cols-[80px_1fr] gap-1">
+                    {rawShop.certificateNumber && (
+                      <>
+                        <span className="text-muted-foreground">Number:</span>
+                        <span className="font-mono text-foreground">{rawShop.certificateNumber}</span>
+                      </>
+                    )}
+                    {rawShop.certificateExpiryDate && (
+                      <>
+                        <span className="text-muted-foreground">Expiry:</span>
+                        <span className="text-foreground">{rawShop.certificateExpiryDate ? new Date(rawShop.certificateExpiryDate).toLocaleDateString() : 'N/A'}</span>
+                      </>
+                    )}
+                  </div>
+                  {rawShop.certificateFile && (
+                    <a href={rawShop.certificateFile} target="_blank" rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1.5 text-xs text-primary font-medium hover:underline">
+                      <Eye className="w-3.5 h-3.5" /> View Document
+                    </a>
+                  )}
+                  {rawShop.certificateStatus === 'pending' && (
+                    <div className="pt-2 flex gap-2">
+                      {certRejectingId === app.id ? (
+                        <div className="w-full space-y-2 bg-red-50/50 dark:bg-red-950/10 p-3 rounded-xl">
+                          <Textarea
+                            placeholder="Reason for rejection..."
+                            value={certRejectReason}
+                            onChange={e => setCertRejectReason(e.target.value)}
+                            className="bg-background neu-inset border-red-200 dark:border-red-900 resize-none h-16 text-sm"
+                          />
+                          <div className="flex gap-2">
+                            <Button size="sm" variant="ghost" onClick={() => { setCertRejectingId(null); setCertRejectReason(""); }} className="flex-1 rounded-xl text-xs">Cancel</Button>
+                            <Button size="sm" variant="destructive" onClick={() => handleRejectCert(app.id)} className="flex-1 bg-red-600 hover:bg-red-700 shadow-none neu-card text-white rounded-xl text-xs">Confirm Reject</Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <Button size="sm" onClick={() => handleVerify(app.id)} disabled={verifyingId === app.id} className="flex-1 bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-none neu-card text-xs">
+                            {verifyingId === app.id ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" />Verifying…</> : <><CheckCircle className="w-3 h-3 mr-1" />Verify Certificate</>}
+                          </Button>
+                          <Button size="sm" variant="outline" onClick={() => setCertRejectingId(app.id)} className="flex-1 text-red-600 border-red-200 hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-900/30 rounded-xl shadow-none neu-inset bg-background text-xs">
+                            <XCircle className="w-3 h-3 mr-1" />Reject Doc
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!rawShop?.certificateType && app.status === 'approved' && rawShop?.verificationStatus !== 'verified' && (
+                <div className="flex">
+                  <Button size="sm" onClick={() => handleVerify(app.id)} disabled={verifyingId === app.id} className="bg-blue-600 hover:bg-blue-700 text-white rounded-xl shadow-none neu-card text-xs">
+                    {verifyingId === app.id ? <><Loader2 className="w-3 h-3 mr-1 animate-spin" />Verifying…</> : <><CheckCircle className="w-3 h-3 mr-1" />Mark Vendor Verified</>}
+                  </Button>
+                </div>
+              )}
+
+              {app.status === 'pending' && (
+                <div className="pt-2 border-t border-border space-y-3">
+                  {rawShop?.certificateFile && rawShop?.certificateStatus === 'pending' && (
+                    <div className="flex items-start gap-2 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/50 rounded-xl px-3 py-2.5 text-xs text-amber-800 dark:text-amber-300">
+                      <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                      <span>A compliance document is pending review. Approving will automatically verify it, or you can review it above first.</span>
+                    </div>
+                  )}
+                  <div className="flex flex-col md:flex-row gap-3">
+                  {rejectingId === app.id ? (
+                    <div className="w-full space-y-3 bg-red-50/50 dark:bg-red-950/10 p-3 rounded-xl">
+                      <Textarea 
+                        placeholder="Reason for rejection..." 
+                        value={rejectReason}
+                        onChange={e => setRejectReason(e.target.value)}
+                        className="bg-background neu-inset border-red-200 dark:border-red-900 resize-none h-20"
+                      />
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="ghost" onClick={() => { setRejectingId(null); setRejectReason(""); }} className="flex-1 rounded-xl">
+                          Cancel
+                        </Button>
+                        <Button size="sm" variant="destructive" onClick={() => handleReject(app.id)} className="flex-1 bg-red-600 hover:bg-red-700 shadow-none neu-card text-white rounded-xl">
+                          Confirm Rejection
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <Button onClick={() => handleApprove(app.id)} className="flex-1 bg-green-600 hover:bg-green-700 text-white rounded-xl shadow-none neu-card">
+                        <CheckCircle className="w-4 h-4 mr-2" /> Approve Application
+                      </Button>
+                      <Button onClick={() => setRejectingId(app.id)} variant="outline" className="flex-1 text-red-600 border-red-200 hover:bg-red-50 dark:border-red-900 dark:hover:bg-red-900/30 rounded-xl shadow-none neu-inset bg-background">
+                        <XCircle className="w-4 h-4 mr-2" /> Reject
+                      </Button>
+                    </>
+                  )}
+                  </div>
+                </div>
+              )}
+
+              {app.status === 'rejected' && app.rejectionReason && (
+                <div className="bg-red-50 dark:bg-red-950/20 p-3 rounded-xl border border-red-100 dark:border-red-900/50 mt-2">
+                  <p className="text-sm font-semibold text-red-900 dark:text-red-400 mb-1">Rejection Reason:</p>
+                  <p className="text-sm text-red-700 dark:text-red-300">{app.rejectionReason}</p>
+                </div>
+              )}
+            </div>
+            );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// USERS SECTION (COMBINED CUSTOMERS & VENDORS)
+// ============================================================================
+
+function UsersTab() {
+  const [subTab, setSubTab] = useState<'customers' | 'vendors'>('customers');
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold text-foreground">User Management</h2>
+      </div>
+
+      <div className="flex gap-2 p-1 bg-background neu-inset rounded-xl max-w-fit">
+        <button
+          onClick={() => setSubTab('customers')}
+          className={`px-6 py-2 rounded-lg text-sm font-medium transition-all ${
+            subTab === 'customers' ? 'bg-primary text-primary-foreground neu-card' : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          Customers
+        </button>
+        <button
+          onClick={() => setSubTab('vendors')}
+          className={`px-6 py-2 rounded-lg text-sm font-medium transition-all ${
+            subTab === 'vendors' ? 'bg-primary text-primary-foreground neu-card' : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          Vendors
+        </button>
+      </div>
+
+      {subTab === 'customers' ? <CustomersList /> : <VendorsList />}
+    </div>
+  );
+}
+
+function formatLastSeen(lastSeenAt?: string, isOnline?: boolean) {
+  if (isOnline) return "Online now";
+  if (!lastSeenAt) return "Never online";
+  const diffMs = Date.now() - new Date(lastSeenAt).getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  if (diffMins < 1) return "Just now";
+  if (diffMins < 60) return `Last seen ${diffMins}m ago`;
+  const diffHours = Math.floor(diffMins / 60);
+  if (diffHours < 24) return `Last seen ${diffHours}h ago`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `Last seen ${diffDays}d ago`;
+}
+
+function CustomersList() {
+  const [customers, setCustomers] = useState<AdminCustomer[]>([]);
+  const [loadingCustomers, setLoadingCustomers] = useState(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<'all' | 'active' | 'banned'>('all');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [setupEmailInput, setSetupEmailInput] = useState<Record<string, string>>({});
+  const [sendingSetup, setSendingSetup] = useState<Set<string>>(new Set());
+
+  const fetchCustomers = () => {
+    setLoadingCustomers(true);
+    setFetchError(null);
+    api.get<{ success: boolean; users: ApiUser[] }>('/users?role=customer&limit=100')
+      .then(async usersData => {
+        const allOrders: ApiOrder[] = await api
+          .get<{ success: boolean; orders: ApiOrder[] }>('/orders?limit=100')
+          .then(d => d.orders ?? [])
+          .catch(() => []);
+        setCustomers(usersData.users.map(u => {
+          const customerOrders = allOrders.filter(o => o.customerId === u._id);
+          const totalSpent = customerOrders.reduce((s, o) => s + (o.netAmount ?? o.subtotal ?? 0), 0);
+          return {
+            id: u._id,
+            name: u.name,
+            phone: u.phone,
+            email: u.email ?? "",
+            hasPassword: u.hasPassword ?? false,
+            joinedAt: u.createdAt,
+            lastSeenAt: u.lastSeenAt,
+            lastLoginSource: u.lastLoginSource ?? "web",
+            isOnline: u.isOnline ?? false,
+            totalOrders: customerOrders.length,
+            totalSpent,
+            status: (u.status === 'banned' ? 'banned' : 'active') as 'active' | 'banned',
+            addresses: (u.addresses ?? []).map(a => ({
+              id: a.id ?? "",
+              label: (a.label ?? "Home") as 'Home' | 'Work' | 'Other',
+              line1: a.line1 ?? "",
+              line2: a.line2,
+              city: a.city ?? "",
+              pincode: a.pincode ?? "",
+            })),
+            orders: customerOrders.map(o => ({
+              id: `#${o._id.slice(-6).toUpperCase()}`,
+              placedAt: o.createdAt,
+              vendorId: o.shopId ?? '',
+              vendorName: o.shopName ?? 'Shop',
+              items: o.items.map(i => ({
+                name: i.productName ?? i.name ?? "",
+                qty: i.qty,
+                price: i.price,
+                selectedGrams: i.selectedGrams,
+                selectedWeight: i.selectedWeight,
+                variantPrice: i.variantPrice,
+                totalPrice: i.totalPrice,
+                category: '',
+              })),
+              total: o.netAmount ?? o.subtotal ?? o.items.reduce((s, i) => s + i.price * i.qty, 0),
+              status: (o.status ?? 'placed') as 'placed' | 'packed' | 'out_for_delivery' | 'delivered',
+              paymentMethod: (o.paymentMethod ?? 'COD') as 'UPI' | 'Card' | 'COD',
+            })),
+          };
+        }));
+      })
+      .catch(err => {
+        setFetchError(err instanceof Error ? err.message : "Failed to load customers");
+        setCustomers([]);
+      })
+      .finally(() => setLoadingCustomers(false));
+  };
+
+  useEffect(() => {
+    fetchCustomers();
+  }, []);
+
+  const sendSetupEmail = async (customerId: string, emailOverride?: string) => {
+    setSendingSetup(prev => new Set(prev).add(customerId));
+    try {
+      const body = emailOverride ? { email: emailOverride } : {};
+      const res = await api.post<{ success: boolean; message: string; email?: string }>(`/users/${customerId}/send-setup-email`, body);
+      toast.success(res.message ?? "Setup email sent");
+      if (res.email) {
+        setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, email: res.email! } : c));
+        setSetupEmailInput(prev => ({ ...prev, [customerId]: "" }));
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to send setup email");
+    } finally {
+      setSendingSetup(prev => { const s = new Set(prev); s.delete(customerId); return s; });
+    }
+  };
+
+  const banCustomer = async (customerId: string) => {
+    try {
+      await api.patch(`/users/${customerId}/ban`);
+      setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, status: 'banned' as const } : c));
+      toast.success("Customer banned");
+    } catch { toast.error("Failed to ban customer"); }
+  };
+
+  const unbanCustomer = async (customerId: string) => {
+    try {
+      await api.patch(`/users/${customerId}/unban`);
+      setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, status: 'active' as const } : c));
+      toast.success("Customer unbanned");
+    } catch { toast.error("Failed to unban customer"); }
+  };
+
+  const filtered = customers.filter(c => {
+    if (filter !== 'all' && c.status !== filter) return false;
+    if (search && !c.name.toLowerCase().includes(search.toLowerCase()) && !c.phone.includes(search)) return false;
+    return true;
+  });
+
+  if (loadingCustomers) {
+    return <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="h-20 bg-muted rounded-3xl animate-pulse" />)}</div>;
+  }
+
+  if (fetchError) {
+    return (
+      <div className="text-center p-12 bg-card rounded-3xl neu-inset text-muted-foreground">
+        <AlertCircle className="w-10 h-10 mx-auto mb-3 text-destructive opacity-70" />
+        <p className="font-medium text-foreground mb-1">Failed to load customers</p>
+        <p className="text-sm mb-4">{fetchError}</p>
+        <button onClick={fetchCustomers} className="text-primary text-sm font-medium underline">Retry</button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col md:flex-row gap-4">
+        <div className="relative flex-1">
+          <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input 
+            placeholder="Search customers by name or phone..." 
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="pl-11 h-12 bg-card neu-inset rounded-2xl border-none"
+          />
+        </div>
+        <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0 scrollbar-hide shrink-0">
+          {(['all', 'active', 'banned'] as const).map(f => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`px-4 py-2 rounded-xl text-sm font-medium capitalize whitespace-nowrap transition-all ${
+                filter === f ? 'bg-primary text-primary-foreground neu-card' : 'bg-background text-muted-foreground neu-inset'
+              }`}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        {filtered.length === 0 ? (
+          <div className="text-center p-12 bg-card rounded-3xl neu-inset text-muted-foreground">
+            <Users className="w-12 h-12 mx-auto mb-4 opacity-20" />
+            <p>No customers found</p>
+          </div>
+        ) : (
+          filtered.map(c => (
+            <div key={c.id} className="bg-card rounded-3xl neu-card overflow-hidden">
+              <div 
+                className="p-4 md:p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 cursor-pointer hover:bg-muted/10 transition-colors"
+                onClick={() => setExpandedId(expandedId === c.id ? null : c.id)}
+              >
+                <div className="flex items-center gap-4">
+                  <div className="relative shrink-0">
+                    <div className="w-12 h-12 rounded-full bg-primary/10 text-primary flex items-center justify-center font-bold text-lg neu-inset">
+                      {c.name.charAt(0)}
+                    </div>
+                    <span
+                      className={`absolute bottom-0 right-0 w-3.5 h-3.5 rounded-full border-2 border-background ${
+                        c.isOnline ? "bg-emerald-500 animate-pulse" : "bg-slate-400"
+                      }`}
+                      title={c.isOnline ? "Online now" : "Offline"}
+                    />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-bold text-foreground">{c.name}</h3>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wider ${
+                        c.lastLoginSource === "app"
+                          ? "bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20"
+                          : "bg-purple-500/10 text-purple-600 dark:text-purple-400 border-purple-500/20"
+                      }`}>
+                        {c.lastLoginSource === "app" ? "📱 Mobile App" : "🌐 Website"}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
+                      <span className="font-mono">{c.phone}</span>
+                      <span>•</span>
+                      <span className={c.isOnline ? "text-emerald-600 dark:text-emerald-400 font-semibold" : ""}>
+                        {formatLastSeen(c.lastSeenAt, c.isOnline)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="grid grid-cols-2 md:flex md:items-center gap-4 md:gap-8 flex-1 md:justify-end text-sm">
+                  <div className="text-left md:text-right">
+                    <p className="text-muted-foreground text-xs">Total Spent</p>
+                    <p className="font-bold text-foreground">{formatINR(c.totalSpent)}</p>
+                  </div>
+                  <div className="text-left md:text-right">
+                    <p className="text-muted-foreground text-xs">Orders</p>
+                    <p className="font-bold text-foreground">{c.totalOrders}</p>
+                  </div>
+                  <div className="text-left md:text-right">
+                    <p className="text-muted-foreground text-xs">Status</p>
+                    {c.status === 'active' 
+                      ? <Badge className="bg-green-100 text-green-800 border-none px-2 rounded-full font-medium">Active</Badge>
+                      : <Badge className="bg-red-100 text-red-800 border-none px-2 rounded-full font-medium">Banned</Badge>
+                    }
+                  </div>
+                  <div className="flex items-center justify-end">
+                    {expandedId === c.id ? <ChevronUp className="w-5 h-5 text-muted-foreground" /> : <ChevronDown className="w-5 h-5 text-muted-foreground" />}
+                  </div>
+                </div>
+              </div>
+
+              {expandedId === c.id && (
+                <div className="px-4 md:px-6 pb-6 pt-2 border-t border-border/50 bg-background/50">
+                  <div className="flex flex-col md:flex-row justify-between gap-4 mb-4 mt-2">
+                    <div className="space-y-1">
+                      <p className="text-sm text-muted-foreground">
+                        <span className="font-medium text-foreground">First login:</span>{" "}
+                        {new Date(c.joinedAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        <span className="font-medium text-foreground">Email:</span>{" "}{c.email || <span className="italic text-muted-foreground/60">not set</span>}
+                      </p>
+                      <p className="text-sm text-muted-foreground">
+                        <span className="font-medium text-foreground">Password:</span>{" "}
+                        {c.hasPassword
+                          ? <span className="text-green-600 font-medium">Set</span>
+                          : <span className="text-amber-600 font-medium">Not set</span>}
+                      </p>
+                      {c.addresses.length > 0 && (
+                        <div className="mt-2 space-y-1">
+                          <p className="text-sm font-medium text-foreground">Saved Addresses:</p>
+                          {c.addresses.map((addr, idx) => (
+                            <div key={addr.id || idx} className="text-xs text-muted-foreground bg-background rounded-xl px-3 py-2 neu-inset">
+                              <span className="font-semibold text-foreground">{addr.label}</span>
+                              {" — "}{addr.line1}{addr.line2 ? `, ${addr.line2}` : ""}, {addr.city} – {addr.pincode}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      {c.status === 'active' ? (
+                        <Button 
+                          onClick={(e) => { e.stopPropagation(); banCustomer(c.id); toast.success("Customer banned"); }}
+                          variant="outline" 
+                          className="text-red-600 border-red-200 hover:bg-red-50 rounded-xl neu-inset bg-background shadow-none h-9"
+                        >
+                          <Ban className="w-4 h-4 mr-2" /> Ban User
+                        </Button>
+                      ) : (
+                        <Button 
+                          onClick={(e) => { e.stopPropagation(); unbanCustomer(c.id); toast.success("Customer unbanned"); }}
+                          className="bg-green-600 hover:bg-green-700 text-white rounded-xl neu-card shadow-none h-9"
+                        >
+                          <CheckCircle className="w-4 h-4 mr-2" /> Unban User
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* ── Account Setup Email ───────────────────────────────── */}
+                  {!c.hasPassword && (
+                    <div className="mb-4 p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded-2xl">
+                      <p className="text-xs font-semibold text-amber-800 dark:text-amber-300 mb-2">
+                        No password set — send account setup link
+                      </p>
+                      {c.email ? (
+                        <Button
+                          size="sm"
+                          disabled={sendingSetup.has(c.id)}
+                          onClick={e => { e.stopPropagation(); sendSetupEmail(c.id); }}
+                          className="bg-amber-600 hover:bg-amber-700 text-white rounded-xl h-8 text-xs"
+                        >
+                          {sendingSetup.has(c.id) ? <Loader2 className="w-3 h-3 mr-1 animate-spin" /> : <Mail className="w-3 h-3 mr-1" />}
+                          Send setup link to {c.email}
+                        </Button>
+                      ) : (
+                        <div className="flex gap-2" onClick={e => e.stopPropagation()}>
+                          <Input
+                            placeholder="Enter email address…"
+                            value={setupEmailInput[c.id] ?? ""}
+                            onChange={e => setSetupEmailInput(prev => ({ ...prev, [c.id]: e.target.value }))}
+                            className="h-8 text-xs rounded-xl bg-background border-amber-300 dark:border-amber-700 flex-1"
+                          />
+                          <Button
+                            size="sm"
+                            disabled={sendingSetup.has(c.id) || !(setupEmailInput[c.id] ?? "").includes("@")}
+                            onClick={() => sendSetupEmail(c.id, setupEmailInput[c.id])}
+                            className="bg-amber-600 hover:bg-amber-700 text-white rounded-xl h-8 text-xs shrink-0"
+                          >
+                            {sendingSetup.has(c.id) ? <Loader2 className="w-3 h-3 animate-spin" /> : "Send link"}
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {c.orders.length > 0 ? (
+                    <div className="space-y-3 mt-4">
+                      <h4 className="font-semibold text-sm text-foreground">Recent Orders</h4>
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-sm">
+                          <thead>
+                            <tr className="text-left text-muted-foreground border-b border-border">
+                              <th className="pb-2 font-medium">Order ID</th>
+                              <th className="pb-2 font-medium">Date</th>
+                              <th className="pb-2 font-medium">Shop</th>
+                              <th className="pb-2 font-medium">Items</th>
+                              <th className="pb-2 font-medium text-right">Total</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {c.orders.map(o => (
+                              <tr key={o.id} className="border-b border-border/30 last:border-0">
+                                <td className="py-2 font-mono text-xs">{o.id}</td>
+                                <td className="py-2">{new Date(o.placedAt).toLocaleDateString()}</td>
+                                <td className="py-2 truncate max-w-[150px]">{o.vendorName}</td>
+                                <td className="py-2 text-muted-foreground">{o.items.length} items</td>
+                                <td className="py-2 text-right font-medium">{formatINR(o.total)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground mt-4 italic">No orders yet.</p>
+                  )}
+                </div>
+              )}
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+function VendorsList() {
+  const [apiShops, setApiShops] = useState<ApiShop[]>([]);
+  const [loadingVendors, setLoadingVendors] = useState(true);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<'all' | 'active' | 'banned'>('all');
+
+  const fetchVendors = () => {
+    setLoadingVendors(true);
+    api.get<{ success: boolean; shops: ApiShop[] }>('/shops?status=approved&limit=100')
+      .then(d => setApiShops(d.shops))
+      .catch(() => setApiShops([]))
+      .finally(() => setLoadingVendors(false));
+  };
+
+  useEffect(() => { fetchVendors(); }, []);
+
+  const allShops = useMemo<Vendor[]>(() => {
+    return apiShops.map(s => ({
+      id: s._id,
+      storeName: s.shopName,
+      ownerName: s.ownerName,
+      category: s.shopType,
+      tagline: s.description ?? "",
+      rating: s.rating ?? 0,
+      totalOrders: s.totalOrders ?? 0,
+      isOpen: s.isOpen ?? true,
+      eta: "",
+      image: "",
+      pincode: s.address?.pincode ?? "N/A",
+      city: s.address?.city ?? "N/A",
+      phone: s.phone,
+      status: (s.status === 'banned' ? 'banned' : 'active') as 'active' | 'banned',
+      joinedAt: s.createdAt,
+      revenue: s.totalRevenue ?? 0,
+      commission: 0,
+    }));
+  }, [apiShops]);
+
+  const filtered = allShops.filter(s => {
+    if (filter !== 'all' && s.status !== filter) return false;
+    if (search && !s.storeName.toLowerCase().includes(search.toLowerCase()) && !s.ownerName.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const handleBan = async (id: string) => {
+    try {
+      await api.patch(`/shops/${id}/ban`);
+      setApiShops(prev => prev.map(s => s._id === id ? { ...s, status: 'banned' as const } : s));
+      toast.success("Shop banned");
+    } catch { toast.error("Failed to ban shop"); }
+  };
+
+  const handleUnban = async (id: string) => {
+    try {
+      await api.patch(`/shops/${id}/unban`);
+      setApiShops(prev => prev.map(s => s._id === id ? { ...s, status: 'approved' as const } : s));
+      toast.success("Shop unbanned");
+    } catch { toast.error("Failed to unban shop"); }
+  };
+
+  const handleRemove = async (id: string) => {
+    if (confirm("Are you sure you want to permanently remove this shop?")) {
+      try {
+        await api.delete(`/shops/${id}`);
+        setApiShops(prev => prev.filter(s => s._id !== id));
+        toast.success("Shop removed");
+      } catch { toast.error("Failed to remove shop"); }
+    }
+  };
+
+  if (loadingVendors) {
+    return <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="h-24 bg-muted rounded-3xl animate-pulse" />)}</div>;
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-col md:flex-row gap-4">
+        <div className="relative flex-1">
+          <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input 
+            placeholder="Search shops by name or owner..." 
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="pl-11 h-12 bg-card neu-inset rounded-2xl border-none"
+          />
+        </div>
+        <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0 scrollbar-hide shrink-0">
+          {(['all', 'active', 'banned'] as const).map(f => (
+            <button
+              key={f}
+              onClick={() => setFilter(f)}
+              className={`px-4 py-2 rounded-xl text-sm font-medium capitalize whitespace-nowrap transition-all ${
+                filter === f ? 'bg-primary text-primary-foreground neu-card' : 'bg-background text-muted-foreground neu-inset'
+              }`}
+            >
+              {f}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {filtered.length === 0 ? (
+          <div className="col-span-full text-center p-12 bg-card rounded-3xl neu-inset text-muted-foreground">
+            <Store className="w-12 h-12 mx-auto mb-4 opacity-20" />
+            <p>No shops found</p>
+          </div>
+        ) : (
+          filtered.map(shop => (
+            <div key={shop.id} className={`bg-card p-6 rounded-3xl neu-card space-y-4 ${shop.status === 'banned' ? 'opacity-75 grayscale-[50%]' : ''}`}>
+              <div className="flex items-start gap-4">
+                <div className="w-16 h-16 rounded-2xl bg-primary/10 neu-inset flex items-center justify-center shrink-0">
+                  <span className="text-2xl font-bold text-primary">{shop.storeName.charAt(0).toUpperCase()}</span>
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="font-bold text-foreground truncate">{shop.storeName}</h3>
+                    {shop.status === 'banned' && <Badge className="bg-red-100 text-red-800 border-none shrink-0">Banned</Badge>}
+                  </div>
+                  <p className="text-sm text-muted-foreground flex items-center gap-1 mt-1 truncate">
+                    <User className="w-3 h-3" /> {shop.ownerName}
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-1">Joined: {new Date(shop.joinedAt).toLocaleDateString()}</p>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 bg-background p-3 rounded-2xl neu-inset">
+                <div>
+                  <p className="text-xs text-muted-foreground">Revenue</p>
+                  <p className="font-bold text-foreground">{formatINR(shop.revenue)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-muted-foreground">Orders</p>
+                  <p className="font-bold text-foreground">{shop.totalOrders}</p>
+                </div>
+              </div>
+
+              <div className="flex gap-2 pt-2">
+                {shop.status === 'active' ? (
+                  <Button 
+                    onClick={() => handleBan(shop.id)} 
+                    variant="outline" 
+                    className="flex-1 text-red-600 border-red-200 hover:bg-red-50 rounded-xl neu-inset bg-background shadow-none"
+                  >
+                    <Ban className="w-4 h-4 mr-2" /> Ban
+                  </Button>
+                ) : (
+                  <Button 
+                    onClick={() => handleUnban(shop.id)} 
+                    className="flex-1 bg-green-600 hover:bg-green-700 text-white rounded-xl neu-card shadow-none"
+                  >
+                    <CheckCircle className="w-4 h-4 mr-2" /> Unban
+                  </Button>
+                )}
+                <Button 
+                  onClick={() => handleRemove(shop.id)} 
+                  variant="outline" 
+                  className="flex-1 text-red-600 border-red-200 hover:bg-red-50 rounded-xl neu-inset bg-background shadow-none"
+                >
+                  <Trash2 className="w-4 h-4 mr-2" /> Remove
+                </Button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// ORDERS SECTION
+// ============================================================================
+
+function OrdersTab({ onNavigate }: { onNavigate?: (s: AdminSection) => void }) {
+  const [platformOrders, setPlatformOrders] = useState<PlatformOrder[]>([]);
+  const [partnerMap, setPartnerMap] = useState<Record<string, string | null>>({});
+  const [activePartners, setActivePartners] = useState<ActivePartner[]>([]);
+  const [shopsList, setShopsList] = useState<any[]>([]);
+  const [loadingOrders, setLoadingOrders] = useState(true);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<PlatformOrder['status'] | 'all'>('all');
+  const [deliveryFilter, setDeliveryFilter] = useState<'all' | 'instant' | 'standard' | 'saver' | 'scheduled'>('all');
+  const [unassignedOnly, setUnassignedOnly] = useState(false);
+  const [updatingOrder, setUpdatingOrder] = useState<string | null>(null);
+  const [assigningOrder, setAssigningOrder] = useState<string | null>(null);
+  const [pendingAssign, setPendingAssign] = useState<Record<string, string>>({});
+  const [rebroadcastingOrder, setRebroadcastingOrder] = useState<string | null>(null);
+  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+
+  // Form states for manual order creation
+  const [showForm, setShowForm] = useState(false);
+  const [formName, setFormName] = useState("");
+  const [formPhone, setFormPhone] = useState("");
+  const [formShopId, setFormShopId] = useState("");
+  const [formAmount, setFormAmount] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  const handleRebroadcast = async (orderId: string) => {
+    setRebroadcastingOrder(orderId);
+    try {
+      const res = await api.post<{ success: boolean; message: string }>(`/delivery/orders/${orderId}/re-broadcast`);
+      toast.success(res.message || "Re-broadcast alert sent to city riders!");
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to trigger re-broadcast");
+    } finally {
+      setRebroadcastingOrder(null);
+    }
+  };
+
+  const formatAgo = (iso?: string | null) => {
+    if (!iso) return "recently";
+    const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+    if (diff < 15) return "Just now";
+    if (diff < 60) return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    return `${Math.floor(diff / 3600)}h ago`;
+  };
+
+  const toggleItems = (id: string) =>
+    setExpandedItems(prev => { const s = new Set(prev); s.has(id) ? s.delete(id) : s.add(id); return s; });
+
+  const loadOrders = useCallback(async () => {
+    setLoadingOrders(true);
+    try {
+      const [ordersData, partnersData, shopsData] = await Promise.all([
+        api.get<{ success: boolean; orders: ApiOrder[] }>('/orders?limit=200'),
+        api.get<{ success: boolean; partners: ActivePartner[] }>('/delivery'),
+        api.get<{ success: boolean; shops: any[] }>('/shops?status=approved&limit=100'),
+      ]);
+      setShopsList(shopsData.shops ?? []);
+      const rawOrders = ordersData.orders ?? [];
+      setPlatformOrders(rawOrders.map(o => ({
+        id: o._id,
+        customerId: o.customerId,
+        customerName: o.customerName ?? "Customer",
+        customerPhone: o.customerPhone ?? "",
+        vendorId: o.shopId ?? "",
+        vendorName: o.shopName ?? "Shop",
+        items: o.items.map(i => ({
+          name: i.productName ?? i.name ?? "",
+          qty: i.qty,
+          price: i.price,
+          selectedGrams: i.selectedGrams,
+          selectedWeight: i.selectedWeight,
+          variantPrice: i.variantPrice,
+          totalPrice: i.totalPrice,
+          category: "",
+        })),
+        total: o.netAmount ?? o.subtotal ?? o.items.reduce((s, i) => s + i.price * i.qty, 0),
+        status: o.status as PlatformOrder['status'],
+        paymentMethod: (o.paymentMethod ?? "COD") as PlatformOrder['paymentMethod'],
+        paymentStatus: (o.paymentStatus ?? "pending") as PlatformOrder['paymentStatus'],
+        deliveryType: o.deliveryType || 'instant',
+        deliveryOtp: (o as any).deliveryOtp,
+        placedAt: o.createdAt,
+        updatedAt: o.updatedAt ?? o.createdAt,
+        address: o.address,
+        deliveryPartnerId: o.deliveryPartnerId,
+        riderName: o.riderName,
+        riderPhone: o.riderPhone,
+        riderPhotoUrl: o.riderPhotoUrl,
+        deliveryPartner: o.deliveryPartner,
+      })));
+      // Build orderId → deliveryPartnerId map
+      const map: Record<string, string | null> = {};
+      rawOrders.forEach(o => { map[o._id] = o.deliveryPartnerId ?? null; });
+      setPartnerMap(map);
+      setActivePartners((partnersData.partners ?? []).filter(p => p.status === "active"));
+    } catch {
+      setPlatformOrders([]);
+    } finally {
+      setLoadingOrders(false);
+    }
+  }, []);
+
+  useEffect(() => { loadOrders(); }, [loadOrders]);
+
+  const handleCreateOrder = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formName || !formPhone || !formShopId || !formAmount) {
+      toast.error("Please fill in all fields");
+      return;
+    }
+    const amt = parseFloat(formAmount);
+    if (isNaN(amt) || amt <= 0) {
+      toast.error("Please enter a valid amount");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const res = await api.post<{ success: boolean; order: any }>("/orders/admin", {
+        customerName: formName,
+        customerPhone: formPhone,
+        shopId: formShopId,
+        totalAmount: amt
+      });
+      if (res.success) {
+        toast.success("Manual order created successfully");
+        setShowForm(false);
+        setFormName("");
+        setFormPhone("");
+        setFormShopId("");
+        setFormAmount("");
+        loadOrders();
+      }
+    } catch (err: unknown) {
+      toast.error(err instanceof Error ? err.message : "Failed to create manual order");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const updateOrderStatus = async (orderId: string, status: PlatformOrder['status']) => {
+    try {
+      await api.patch(`/orders/${orderId}/status`, { status });
+      setPlatformOrders(prev => prev.map(o => o.id === orderId ? { ...o, status } : o));
+      toast.success("Order status updated");
+    } catch { toast.error("Failed to update order status"); }
+  };
+
+  const refundOrder = async (orderId: string) => {
+    try {
+      await api.post(`/orders/${orderId}/refund`);
+      setPlatformOrders(prev => prev.map(o => o.id === orderId ? { ...o, paymentStatus: 'refunded' as const } : o));
+      toast.success("Refund issued");
+    } catch { toast.error("Failed to issue refund"); }
+  };
+
+  const handleAssignPartner = async (orderId: string) => {
+    const selected = pendingAssign[orderId] ?? "__unassigned__";
+    const deliveryPartnerId = selected === "__unassigned__" ? null : selected;
+    setAssigningOrder(orderId);
+    try {
+      await api.patch(`/orders/${orderId}/assign-partner`, { deliveryPartnerId });
+      setPartnerMap(prev => ({ ...prev, [orderId]: deliveryPartnerId }));
+      const partner = activePartners.find(p => p._id === deliveryPartnerId);
+      toast.success(deliveryPartnerId ? `Assigned to ${partner?.name ?? "partner"}` : "Partner unassigned");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to assign partner");
+    } finally {
+      setAssigningOrder(null);
+    }
+  };
+
+  const getAssignedPartnerName = (orderId: string) => {
+    const pid = partnerMap[orderId];
+    if (!pid) return null;
+    return activePartners.find(p => p._id === pid) ?? null;
+  };
+
+  const filtered = platformOrders.filter(o => {
+    if (filter !== 'all' && o.status !== filter) return false;
+    if (deliveryFilter !== 'all' && o.deliveryType !== deliveryFilter) return false;
+    if (unassignedOnly && partnerMap[o.id]) return false;
+    if (search && !o.id.toLowerCase().includes(search.toLowerCase()) &&
+        !o.customerName.toLowerCase().includes(search.toLowerCase()) &&
+        !o.vendorName.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  if (loadingOrders) {
+    return <div className="space-y-3">{[1,2,3].map(i => <div key={i} className="h-28 bg-muted rounded-3xl animate-pulse" />)}</div>;
+  }
+
+  const getStatusColor = (status: string) => {
+    switch(status) {
+      case 'placed': return 'bg-blue-100 text-blue-800';
+      case 'accepted':
+      case 'confirmed': return 'bg-sky-100 text-sky-800';
+      case 'preparing': return 'bg-orange-100 text-orange-800';
+      case 'packed': return 'bg-amber-100 text-amber-800';
+      case 'shipped': return 'bg-cyan-100 text-cyan-800';
+      case 'out_for_delivery': return 'bg-purple-100 text-purple-800';
+      case 'delivered': return 'bg-green-100 text-green-800';
+      case 'cancelled': return 'bg-red-100 text-red-800';
+      default: return 'bg-slate-100 text-slate-800';
+    }
+  };
+
+  const getPaymentColor = (status: string) => {
+    switch(status) {
+      case 'success': return 'bg-green-100 text-green-800';
+      case 'pending': return 'bg-amber-100 text-amber-800';
+      case 'failed': return 'bg-red-100 text-red-800';
+      case 'refunded': return 'bg-slate-100 text-slate-800';
+      default: return 'bg-slate-100 text-slate-800';
+    }
+  };
+
+  const unassignedCount = platformOrders.filter(o =>
+    !["delivered", "cancelled", "refunded"].includes(o.status) && !partnerMap[o.id]
+  ).length;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-3 flex-wrap">
+        <h2 className="text-2xl font-bold text-foreground">Order Management</h2>
+        <Badge className="bg-primary/10 text-primary neu-inset border-none">{platformOrders.length} total</Badge>
+        {unassignedCount > 0 && (
+          <Badge className="bg-amber-100 text-amber-700 border-none neu-inset dark:bg-amber-900/30 dark:text-amber-300">
+            {unassignedCount} need delivery partner
+          </Badge>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          <Button onClick={() => setShowForm(!showForm)} className="rounded-xl gap-1.5 shadow-none neu-card font-bold text-sm bg-primary text-primary-foreground hover:bg-primary/95 flex items-center">
+            <Plus className="w-4 h-4" /> Create Manual Order
+          </Button>
+          <button onClick={loadOrders} className="p-1.5 text-muted-foreground hover:text-foreground rounded-lg hover:bg-muted">
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Custom Cakes banner inside Orders tab */}
+      <div className="flex items-center justify-between p-4 rounded-2xl bg-gradient-to-r from-pink-500/10 via-amber-500/10 to-rose-500/10 border border-pink-500/20">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-pink-500/20 flex items-center justify-center text-xl shrink-0">
+            🎂
+          </div>
+          <div>
+            <p className="text-sm font-bold text-foreground">Custom Cake Requests & Bakery Orders</p>
+            <p className="text-xs text-muted-foreground">Review custom cake quotes, baking status, and customer pickup PINs</p>
+          </div>
+        </div>
+        {onNavigate && (
+          <Button
+            size="sm"
+            onClick={() => onNavigate('custom-cakes')}
+            className="rounded-xl bg-gradient-to-r from-amber-500 to-rose-500 hover:from-amber-600 hover:to-rose-600 text-white text-xs font-bold shrink-0 shadow-sm"
+          >
+            Manage Custom Cakes →
+          </Button>
+        )}
+      </div>
+
+      <AnimatePresence>
+        {showForm && (
+          <motion.form
+            onSubmit={handleCreateOrder}
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            className="bg-card rounded-3xl neu-card p-6 space-y-4 border border-primary/5"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="font-extrabold text-lg text-foreground">Create Manual Order</h3>
+              <button type="button" onClick={() => setShowForm(false)} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="text-xs font-bold block mb-1.5 text-muted-foreground uppercase tracking-wide">Customer Name</label>
+                <Input 
+                  placeholder="Enter customer name"
+                  value={formName}
+                  onChange={e => setFormName(e.target.value)}
+                  className="bg-background neu-inset border-none rounded-xl animate-none focus-visible:ring-0"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold block mb-1.5 text-muted-foreground uppercase tracking-wide">Customer Phone Number</label>
+                <Input 
+                  placeholder="Enter 10-digit phone number"
+                  type="tel"
+                  pattern="[0-9]{10}"
+                  value={formPhone}
+                  onChange={e => setFormPhone(e.target.value)}
+                  className="bg-background neu-inset border-none rounded-xl animate-none focus-visible:ring-0"
+                  required
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-bold block mb-1.5 text-muted-foreground uppercase tracking-wide text-left">Select Shop (Vendor)</label>
+                <select
+                  value={formShopId}
+                  onChange={e => setFormShopId(e.target.value)}
+                  className="w-full h-10 px-3 rounded-xl bg-background border-none text-sm text-foreground focus:outline-none focus:ring-0 shadow-inner"
+                  required
+                >
+                  <option value="">-- Choose an approved shop --</option>
+                  {shopsList.map(s => (
+                    <option key={s.id} value={s.id}>{s.storeName} ({s.ownerName})</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold block mb-1.5 text-muted-foreground uppercase tracking-wide">Total Order Amount (₹)</label>
+                <Input 
+                  placeholder="Enter order amount"
+                  type="number"
+                  min="1"
+                  step="0.01"
+                  value={formAmount}
+                  onChange={e => setFormAmount(e.target.value)}
+                  className="bg-background neu-inset border-none rounded-xl animate-none focus-visible:ring-0"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="outline" onClick={() => setShowForm(false)} className="rounded-xl border-none bg-background text-foreground neu-inset">
+                Cancel
+              </Button>
+              <Button type="submit" disabled={submitting} className="rounded-xl bg-primary text-primary-foreground hover:bg-primary/90 font-bold px-6">
+                {submitting ? "Creating..." : "Create Order"}
+              </Button>
+            </div>
+          </motion.form>
+        )}
+      </AnimatePresence>
+
+      <div className="flex flex-col md:flex-row gap-4">
+        <div className="relative flex-1">
+          <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input 
+            placeholder="Search by Order ID, Customer, or Shop..." 
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="pl-11 h-12 bg-card neu-inset rounded-2xl border-none"
+          />
+        </div>
+        <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0 scrollbar-hide shrink-0">
+          {(['all', 'placed', 'packed', 'out_for_delivery', 'delivered', 'cancelled'] as const).map(f => (
+            <button
+              key={f}
+              onClick={() => setFilter(f as any)}
+              className={`px-4 py-2 rounded-xl text-sm font-medium capitalize whitespace-nowrap transition-all ${
+                filter === f ? 'bg-primary text-primary-foreground neu-card' : 'bg-background text-muted-foreground neu-inset'
+              }`}
+            >
+              {f.replace(/_/g, ' ')}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2 shrink-0 flex-wrap">
+          {(['all', 'instant', 'standard', 'saver', 'scheduled'] as const).map(f => (
+            <button
+              key={f}
+              onClick={() => setDeliveryFilter(f)}
+              className={`px-3 py-2 rounded-xl text-sm font-medium capitalize whitespace-nowrap transition-all ${
+                deliveryFilter === f
+                  ? f === 'scheduled'
+                    ? 'bg-violet-600 text-white neu-card'
+                    : f === 'saver'
+                    ? 'bg-emerald-600 text-white neu-card'
+                    : f === 'standard'
+                    ? 'bg-blue-600 text-white neu-card'
+                    : f === 'instant'
+                    ? 'bg-amber-500 text-white neu-card'
+                    : 'bg-primary text-primary-foreground neu-card'
+                  : 'bg-background text-muted-foreground neu-inset'
+              }`}
+            >
+              {f === 'all'
+                ? '⚡ All types'
+                : f === 'instant'
+                ? '⚡ Instant'
+                : f === 'standard'
+                ? '🚚 Standard'
+                : f === 'saver'
+                ? '🌱 Saver'
+                : '🕐 Scheduled'}
+            </button>
+          ))}
+          <button
+            onClick={() => setUnassignedOnly(v => !v)}
+            className={`px-3 py-2 rounded-xl text-sm font-medium whitespace-nowrap transition-all flex items-center gap-1.5 ${
+              unassignedOnly ? 'bg-amber-500 text-white neu-card' : 'bg-background text-muted-foreground neu-inset'
+            }`}
+          >
+            <Bike className="w-3.5 h-3.5" /> Unassigned
+          </button>
+        </div>
+      </div>
+
+      <div className="space-y-3">
+        {filtered.length === 0 ? (
+          <div className="text-center p-12 bg-card rounded-3xl neu-inset text-muted-foreground">
+            <ShoppingBag className="w-12 h-12 mx-auto mb-4 opacity-20" />
+            <p>No orders found</p>
+          </div>
+        ) : (
+          filtered.map(o => {
+            const assignedPartner = getAssignedPartnerName(o.id);
+            const currentPendingAssign = pendingAssign[o.id] ?? (partnerMap[o.id] ?? "__unassigned__");
+            const isTerminal = ["delivered", "cancelled", "refunded"].includes(o.status);
+            const shortId = `#${o.id.slice(-8).toUpperCase()}`;
+            const addrParts = [o.address?.line1, o.address?.city, o.address?.pincode].filter(Boolean);
+            const addrLabel = o.address?.label ? `${o.address.label} — ` : "";
+            return (
+            <div key={o.id} className="bg-card rounded-2xl neu-card overflow-hidden">
+              {/* ── Top bar ── */}
+              <div className="flex flex-wrap items-center gap-2 px-4 py-3 border-b border-border/40">
+                <span className="font-mono text-sm font-bold text-foreground tracking-wide">{shortId}</span>
+                <Badge className={`${getStatusColor(o.status)} border-none px-2 py-0.5 text-xs capitalize`}>
+                  {o.status.replace(/_/g, ' ')}
+                </Badge>
+                <Badge className={`${getPaymentColor(o.paymentStatus)} border-none px-2 py-0.5 text-xs`}>
+                  {o.paymentMethod} · {o.paymentStatus}
+                </Badge>
+                {o.deliveryType === 'scheduled' ? (
+                  <span className="text-xs text-violet-600 dark:text-violet-400 font-bold">🕐 Scheduled</span>
+                ) : o.deliveryType === 'saver' ? (
+                  <span className="text-xs text-emerald-600 dark:text-emerald-400 font-bold">🌱 Saver (Same Day)</span>
+                ) : o.deliveryType === 'standard' ? (
+                  <span className="text-xs text-blue-600 dark:text-blue-400 font-bold">🚚 Standard (2-4h)</span>
+                ) : (
+                  <span className="text-xs text-amber-600 dark:text-amber-400 font-bold">⚡ Instant (10-15m)</span>
+                )}
+                {o.deliveryOtp && (
+                  <Badge className="bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 px-2 py-0.5 text-xs font-mono font-bold">
+                    🔑 OTP: {o.deliveryOtp}
+                  </Badge>
+                )}
+                <span className="ml-auto text-xs text-muted-foreground">{new Date(o.placedAt).toLocaleString('en-IN', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })}</span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-border/40">
+                {/* ── Customer + Address ── */}
+                <div className="px-4 py-3 space-y-1">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1.5">Customer</p>
+                  <p className="font-semibold text-sm text-foreground">{o.customerName}</p>
+                  {o.customerPhone && <p className="text-xs text-muted-foreground">{o.customerPhone}</p>}
+                  {addrParts.length > 0 && (
+                    <p className="text-xs text-muted-foreground mt-1 leading-relaxed">
+                      📍 {addrLabel}{addrParts.join(', ')}
+                    </p>
+                  )}
+                  <p className="text-xs text-muted-foreground/60 pt-0.5">🏪 {o.vendorName}</p>
+                </div>
+
+                {/* ── Products ── */}
+                <div className="px-4 py-3">
+                  <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-1.5">
+                    Products · {o.items.length} item{o.items.length !== 1 ? 's' : ''}
+                  </p>
+                  <div className="space-y-1">
+                    {o.items.map((item, idx) => (
+                      <div key={`${item.name}-${idx}`} className="flex items-baseline justify-between gap-2 text-sm">
+                        <span className="text-foreground min-w-0 truncate">
+                          <span className="text-muted-foreground mr-1">{item.qty}×</span>{item.name}
+                          {(item.selectedWeight || item.selectedGrams) && (
+                            <span className="ml-1 text-primary font-semibold">
+                              ({item.selectedWeight ?? `${item.selectedGrams}g`})
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-muted-foreground shrink-0 font-medium text-xs">
+                          {formatINR(item.totalPrice ?? item.price * item.qty)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* ── Total + Actions ── */}
+                <div className="px-4 py-3 flex flex-col gap-2">
+                  <div>
+                    <p className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-0.5">Total</p>
+                    <p className="text-xl font-bold text-foreground">{formatINR(o.total)}</p>
+                  </div>
+
+                  {/* Delivery Partner Read-Only Card (v2 Contract) */}
+                  {(() => {
+                    const assignedId = o.deliveryPartnerId || partnerMap[o.id];
+                    const activeP = assignedId ? activePartners.find(p => p._id === assignedId) : null;
+                    const rName = o.riderName || o.deliveryPartner?.name || activeP?.name;
+                    const rPhone = o.riderPhone || o.deliveryPartner?.phone || activeP?.phone;
+                    const rPhoto = o.riderPhotoUrl || o.deliveryPartner?.photoUrl;
+
+                    if (rName) {
+                      return (
+                        <div className="p-3 bg-emerald-500/10 border border-emerald-500/20 rounded-2xl space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              {rPhoto ? (
+                                <img
+                                  src={rPhoto}
+                                  alt={rName}
+                                  className="w-9 h-9 rounded-full object-cover border border-emerald-500/30 shrink-0"
+                                />
+                              ) : (
+                                <div className="w-9 h-9 rounded-full bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 font-bold flex items-center justify-center text-xs border border-emerald-500/30 shrink-0">
+                                  {rName.slice(0, 1).toUpperCase()}
+                                </div>
+                              )}
+                              <div className="min-w-0">
+                                <span className="font-bold text-xs text-foreground block truncate">
+                                  🛵 {rName}
+                                </span>
+                                {rPhone && (
+                                  <a
+                                    href={`tel:${rPhone}`}
+                                    className="text-[11px] font-mono text-primary hover:underline flex items-center gap-1"
+                                  >
+                                    <Phone className="w-3 h-3 inline text-primary shrink-0" />
+                                    {rPhone}
+                                  </a>
+                                )}
+                              </div>
+                            </div>
+                            <Badge variant="outline" className="text-[10px] font-bold uppercase border-emerald-500/40 text-emerald-700 dark:text-emerald-300 shrink-0">
+                              {o.status === "out_for_delivery" ? "Out for Delivery" : o.status === "delivered" ? "Delivered" : "Assigned"}
+                            </Badge>
+                          </div>
+
+                          <div className="text-[10px] text-muted-foreground font-mono flex items-center justify-between border-t border-emerald-500/10 pt-1.5">
+                            <span>Accepted {formatAgo(o.updatedAt || o.placedAt)}</span>
+                            <span className="text-emerald-600 dark:text-emerald-400 font-semibold">{o.status === "delivered" ? "Delivered" : "🟢 Active"}</span>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    if (!isTerminal) {
+                      return (
+                        <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-2xl space-y-2">
+                          <div className="flex items-center justify-between gap-2">
+                            {(Date.now() - new Date(o.placedAt).getTime() > 60000) ? (
+                              <span className="text-xs font-bold text-amber-700 dark:text-amber-300 flex items-center gap-1">
+                                ⚠️ No rider accepted yet
+                              </span>
+                            ) : (
+                              <span className="text-xs font-bold text-amber-700 dark:text-amber-300 flex items-center gap-1">
+                                ⏳ Awaiting Rider
+                              </span>
+                            )}
+                            <Button
+                              size="sm"
+                              disabled={rebroadcastingOrder === o.id}
+                              onClick={() => handleRebroadcast(o.id)}
+                              className="h-7 px-2.5 text-xs bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl shadow-sm shrink-0"
+                            >
+                              {rebroadcastingOrder === o.id ? <Loader2 className="w-3.5 h-3.5 animate-spin mr-1" /> : "📡 Notify Riders Again"}
+                            </Button>
+                          </div>
+                        </div>
+                      );
+                    }
+
+                    return null;
+                  })()}
+
+                  {/* Status update */}
+                  {updatingOrder === o.id ? (
+                    <div className="flex items-center gap-1">
+                      <select
+                        className="flex-1 h-7 rounded-lg border border-input bg-background px-2 text-xs text-foreground"
+                        defaultValue={o.status}
+                        onChange={(e) => { updateOrderStatus(o.id, e.target.value as any); setUpdatingOrder(null); }}
+                      >
+                        <option value="placed">Placed</option>
+                        <option value="accepted">Accepted (Confirm)</option>
+                        <option value="preparing">Preparing</option>
+                        <option value="packed">Packed</option>
+                        <option value="shipped">Shipped (Courier 5–7d)</option>
+                        <option value="out_for_delivery">Out for Delivery</option>
+                        <option value="delivered">Delivered</option>
+                        <option value="cancelled">Cancelled</option>
+                      </select>
+                      <button onClick={() => setUpdatingOrder(null)} className="text-muted-foreground hover:text-foreground"><X className="w-3.5 h-3.5" /></button>
+                    </div>
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setUpdatingOrder(o.id)}
+                      className="h-7 w-full text-xs rounded-lg bg-background neu-inset border-none"
+                    >
+                      Change Status
+                    </Button>
+                  )}
+
+                  {o.paymentStatus === 'success' && o.status !== 'cancelled' && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => { if(confirm(`Refund ${formatINR(o.total)}?`)) refundOrder(o.id); }}
+                      className="h-7 w-full text-xs rounded-lg border-none bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300"
+                    >
+                      <RefreshCw className="w-3 h-3 mr-1" /> Refund
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+          })
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// REPORTS SECTION
+// ============================================================================
+
+function ReportsTab() {
+  const { reports, resolveReport, ignoreReport } = useAuth();
+  const [filter, setFilter] = useState<Report['status'] | 'all'>('all');
+
+  const filtered = reports.filter(r => filter === 'all' || r.status === filter);
+
+  const openCount = reports.filter(r => r.status === 'open').length;
+  const resolvedCount = reports.filter(r => r.status === 'resolved').length;
+  const ignoredCount = reports.filter(r => r.status === 'ignored').length;
+
+  const getReasonColor = (reason: string) => {
+    switch(reason) {
+      case 'fraud': return 'bg-red-100 text-red-800';
+      case 'fake_product': return 'bg-orange-100 text-orange-800';
+      case 'rude_behavior': return 'bg-purple-100 text-purple-800';
+      case 'wrong_delivery': return 'bg-blue-100 text-blue-800';
+      default: return 'bg-slate-100 text-slate-800';
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-3">
+        <h2 className="text-2xl font-bold text-foreground">Reports & Complaints</h2>
+        <div className="flex gap-2">
+          <Badge className="bg-red-100 text-red-800 border-none neu-inset">{openCount} Open</Badge>
+          <Badge className="bg-green-100 text-green-800 border-none neu-inset hidden md:inline-flex">{resolvedCount} Resolved</Badge>
+          <Badge className="bg-slate-100 text-slate-800 border-none neu-inset hidden md:inline-flex">{ignoredCount} Ignored</Badge>
+        </div>
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto pb-2 scrollbar-hide">
+        {(['all', 'open', 'resolved', 'ignored'] as const).map(f => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`px-4 py-2 rounded-xl text-sm font-medium capitalize whitespace-nowrap transition-all ${
+              filter === f ? 'bg-primary text-primary-foreground neu-card' : 'bg-background text-muted-foreground neu-inset'
+            }`}
+          >
+            {f}
+          </button>
+        ))}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        {filtered.length === 0 ? (
+          <div className="col-span-full text-center p-12 bg-card rounded-3xl neu-inset text-muted-foreground">
+            <Flag className="w-12 h-12 mx-auto mb-4 opacity-20" />
+            <p>No reports found</p>
+          </div>
+        ) : (
+          filtered.map(r => (
+            <div key={r.id} className="bg-card p-6 rounded-3xl neu-card space-y-4 flex flex-col">
+              <div className="flex items-start justify-between gap-2">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono font-bold text-foreground">{r.id}</span>
+                    <Badge className={`${r.type === 'shop' ? 'bg-blue-100 text-blue-800' : 'bg-amber-100 text-amber-800'} border-none neu-inset capitalize px-2 py-0.5`}>
+                      {r.type}
+                    </Badge>
+                    <Badge className={`${r.status === 'open' ? 'bg-red-100 text-red-800' : r.status === 'resolved' ? 'bg-green-100 text-green-800' : 'bg-slate-100 text-slate-800'} border-none neu-inset capitalize px-2 py-0.5`}>
+                      {r.status}
+                    </Badge>
+                  </div>
+                  <p className="text-xs text-muted-foreground">{new Date(r.reportedAt).toLocaleString()}</p>
+                </div>
+              </div>
+
+              <div className="bg-background p-3 rounded-2xl neu-inset space-y-2">
+                <div className="flex items-center gap-2 text-sm font-medium text-foreground">
+                  {r.type === 'shop' ? <Store className="w-4 h-4 text-primary" /> : <Package className="w-4 h-4 text-primary" />}
+                  Reported: {r.targetName}
+                </div>
+                <div className="text-xs text-muted-foreground border-t border-border pt-2">
+                  By: <span className="font-medium text-foreground">{r.reportedBy}</span> · {r.reporterPhone}
+                </div>
+              </div>
+
+              <div>
+                <Badge className={`${getReasonColor(r.reason)} border-none mb-2 px-2 py-0.5 capitalize`}>
+                  {r.reason.replace('_', ' ')}
+                </Badge>
+                <p className="text-sm italic text-muted-foreground line-clamp-3">"{r.description}"</p>
+              </div>
+
+              <div className="mt-auto pt-4 flex gap-2">
+                {r.status === 'open' ? (
+                  <>
+                    <Button 
+                      onClick={() => { resolveReport(r.id); toast.success("Report marked as resolved"); }} 
+                      className="flex-1 bg-green-600 hover:bg-green-700 text-white rounded-xl neu-card shadow-none"
+                    >
+                      <CheckCircle className="w-4 h-4 mr-2" /> Resolve
+                    </Button>
+                    <Button 
+                      onClick={() => { ignoreReport(r.id); toast.success("Report ignored"); }} 
+                      variant="outline" 
+                      className="flex-1 text-slate-600 border-slate-200 hover:bg-slate-50 rounded-xl neu-inset bg-background shadow-none"
+                    >
+                      <EyeOff className="w-4 h-4 mr-2" /> Ignore
+                    </Button>
+                  </>
+                ) : (
+                  <div className="w-full text-center p-2 bg-background neu-inset rounded-xl text-sm font-medium text-muted-foreground capitalize">
+                    {r.status}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// ANALYTICS SECTION
+// ============================================================================
+
+interface AnalyticsData {
+  series: { label: string; revenue: number; orders: number; newUsers: number }[];
+  topProducts: { name: string; category: string; unitsSold: number; revenue: number }[];
+  topShops: { shopId: string; shopName: string; totalRevenue: number; totalOrders: number }[];
+}
+
+function AnalyticsTab() {
+  const [period, setPeriod] = useState<'Daily' | 'Weekly' | 'Monthly'>('Daily');
+  const [analyticsData, setAnalyticsData] = useState<AnalyticsData | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
+
+  const loadAnalytics = useCallback((p: 'Daily' | 'Weekly' | 'Monthly') => {
+    setAnalyticsLoading(true);
+    api.get<{ success: boolean } & AnalyticsData>(`/admin/analytics?period=${p.toLowerCase()}`)
+      .then(d => setAnalyticsData({ series: d.series, topProducts: d.topProducts, topShops: d.topShops }))
+      .catch(() => {})
+      .finally(() => setAnalyticsLoading(false));
+  }, []);
+
+  useEffect(() => { loadAnalytics(period); }, [period, loadAnalytics]);
+
+  const data = analyticsData?.series ?? [];
+  const topProducts = analyticsData?.topProducts ?? [];
+  const topShops = analyticsData?.topShops ?? [];
+
+  const totalRev = data.reduce((sum, d) => sum + d.revenue, 0);
+  const totalOrd = data.reduce((sum, d) => sum + d.orders, 0);
+  const totalNewUsers = data.reduce((sum, d) => sum + d.newUsers, 0);
+  const maxUnits = topProducts.length > 0 ? topProducts[0].unitsSold : 1;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <h2 className="text-2xl font-bold text-foreground">Platform Analytics</h2>
+          <button onClick={() => loadAnalytics(period)} disabled={analyticsLoading} className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium bg-card neu-card text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
+            <RefreshCw className={`w-4 h-4 ${analyticsLoading ? 'animate-spin' : ''}`} />
+            Refresh
+          </button>
+        </div>
+        <div className="flex gap-1 p-1 bg-background neu-inset rounded-xl max-w-fit">
+          {(['Daily', 'Weekly', 'Monthly'] as const).map(p => (
+            <button
+              key={p}
+              onClick={() => setPeriod(p)}
+              className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                period === p ? 'bg-primary text-primary-foreground neu-card' : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {p}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <StatCard title="Total Revenue" value={formatINR(totalRev)} icon={TrendingUp} color="text-green-600" />
+        <StatCard title="Total Orders" value={totalOrd} icon={ShoppingBag} color="text-blue-600" />
+        <StatCard title="New Users" value={totalNewUsers} icon={Users} color="text-purple-600" />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-card p-6 rounded-3xl neu-card">
+          <h3 className="text-lg font-bold text-foreground mb-4">Revenue & Orders ({period})</h3>
+          <div className="h-[300px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="colorRev2" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="hsl(var(--primary))" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="hsl(var(--primary))" stopOpacity={0}/>
+                  </linearGradient>
+                  <linearGradient id="colorOrd2" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.3}/>
+                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{fill: 'hsl(var(--muted-foreground))', fontSize: 12}} dy={10} />
+                <YAxis yAxisId="left" axisLine={false} tickLine={false} tick={{fill: 'hsl(var(--muted-foreground))', fontSize: 12}} tickFormatter={(v) => `₹${v/1000}k`} />
+                <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{fill: 'hsl(var(--muted-foreground))', fontSize: 12}} />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: 'hsl(var(--card))', borderRadius: '12px', border: '1px solid hsl(var(--border))', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                  itemStyle={{ color: 'hsl(var(--foreground))' }}
+                  labelStyle={{ color: 'hsl(var(--muted-foreground))', marginBottom: '4px' }}
+                />
+                <Area yAxisId="left" type="monotone" dataKey="revenue" name="Revenue" stroke="hsl(var(--primary))" strokeWidth={3} fillOpacity={1} fill="url(#colorRev2)" />
+                <Area yAxisId="right" type="monotone" dataKey="orders" name="Orders" stroke="#3b82f6" strokeWidth={3} fillOpacity={1} fill="url(#colorOrd2)" />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+
+        <div className="bg-card p-6 rounded-3xl neu-card">
+          <h3 className="text-lg font-bold text-foreground mb-4">New Users ({period})</h3>
+          <div className="h-[300px] w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <BarChart data={data} margin={{ top: 10, right: 10, left: -20, bottom: 0 }} barSize={32}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="hsl(var(--border))" />
+                <XAxis dataKey="label" axisLine={false} tickLine={false} tick={{fill: 'hsl(var(--muted-foreground))', fontSize: 12}} dy={10} />
+                <YAxis axisLine={false} tickLine={false} tick={{fill: 'hsl(var(--muted-foreground))', fontSize: 12}} />
+                <Tooltip 
+                  contentStyle={{ backgroundColor: 'hsl(var(--card))', borderRadius: '12px', border: '1px solid hsl(var(--border))', boxShadow: '0 4px 12px rgba(0,0,0,0.1)' }}
+                  itemStyle={{ color: 'hsl(var(--foreground))' }}
+                  cursor={{ fill: 'hsl(var(--muted)/0.3)' }}
+                />
+                <Bar dataKey="newUsers" name="New Users" fill="#8b5cf6" radius={[6, 6, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-card p-6 rounded-3xl neu-card space-y-6">
+          <div>
+            <h3 className="text-lg font-bold text-foreground">Top Selling Products</h3>
+            <p className="text-sm text-muted-foreground">By units sold this period</p>
+          </div>
+          
+          <div className="space-y-5">
+            {topProducts.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground text-sm">
+                <Package className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                No order data yet — top products will appear here once orders are placed.
+              </div>
+            ) : topProducts.map((p, i) => (
+              <div key={`${p.name}-${i}`} className="space-y-2">
+                <div className="flex items-center gap-3">
+                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${
+                    i === 0 ? 'bg-amber-400 text-white' : i === 1 ? 'bg-slate-400 text-white' : i === 2 ? 'bg-amber-700 text-white' : 'bg-muted text-muted-foreground'
+                  }`}>
+                    {i + 1}
+                  </div>
+                  <div className="w-10 h-10 rounded-xl bg-muted neu-inset flex items-center justify-center shrink-0">
+                    <Package className="w-5 h-5 text-muted-foreground" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-foreground truncate">{p.name}</p>
+                    <Badge variant="secondary" className="text-[10px] px-1.5 py-0 h-4 border-none bg-background neu-inset capitalize mt-0.5">
+                      {(p.category ? String(p.category).replace(/-/g, ' ') : 'General')}
+                    </Badge>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <p className="text-sm font-bold text-foreground">{p.unitsSold} units</p>
+                    <p className="text-[10px] text-muted-foreground">{formatINR(p.revenue)}</p>
+                  </div>
+                </div>
+                <div className="h-1.5 w-full bg-background neu-inset rounded-full overflow-hidden ml-9">
+                  <div
+                    className="h-full bg-primary rounded-full"
+                    style={{ width: `${(p.unitsSold / maxUnits) * 100}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="bg-card p-6 rounded-3xl neu-card space-y-6">
+          <div>
+            <h3 className="text-lg font-bold text-foreground">Top Shops</h3>
+            <p className="text-sm text-muted-foreground">By revenue this period</p>
+          </div>
+          
+          <div className="space-y-4">
+            {topShops.length === 0 ? (
+              <div className="text-center py-8 text-muted-foreground text-sm">
+                <Store className="w-8 h-8 mx-auto mb-2 opacity-30" />
+                No order data yet — top shops will appear here once orders are placed.
+              </div>
+            ) : topShops.map((shop) => (
+              <div key={shop.shopId} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-4 bg-background neu-inset rounded-2xl">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-muted neu-inset flex items-center justify-center shrink-0">
+                    <Store className="w-5 h-5 text-muted-foreground" />
+                  </div>
+                  <div>
+                    <p className="font-semibold text-foreground">{shop.shopName}</p>
+                    <p className="text-xs text-muted-foreground">{shop.totalOrders} orders</p>
+                  </div>
+                </div>
+                <div className="flex sm:flex-col items-center sm:items-end justify-between gap-2 border-t sm:border-t-0 border-border/50 pt-2 sm:pt-0">
+                  <p className="font-bold text-foreground">{formatINR(shop.totalRevenue)}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// TRANSACTIONS SECTION
+// ============================================================================
+
+function TransactionsTab() {
+  const [transactions, setTransactions] = useState<TransactionLog[]>([]);
+  const [txLoading, setTxLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<TransactionLog['status'] | 'all'>('all');
+  const [dateFilter, setDateFilter] = useState<'7' | '30' | 'all'>('all');
+
+  const loadTransactions = useCallback(() => {
+    setTxLoading(true);
+    const methodMap: Record<string, TransactionLog['method']> = { COD: 'COD', UPI: 'UPI', card: 'Card', wallet: 'UPI' };
+    api.get<{ success: boolean; orders: ApiOrder[] }>('/orders?limit=2000')
+      .then(d => {
+        const txns: TransactionLog[] = d.orders.map(o => ({
+          id: `TXN-${o._id.slice(-8).toUpperCase()}`,
+          orderId: o._id,
+          customerName: o.customerName ?? 'Customer',
+          vendorName: o.shopName ?? 'Vendor',
+          amount: o.netAmount ?? o.subtotal ?? 0,
+          method: methodMap[o.paymentMethod ?? 'COD'] ?? 'COD',
+          status: (o.paymentStatus ?? 'pending') as TransactionLog['status'],
+          createdAt: o.createdAt,
+        }));
+        setTransactions(txns);
+      })
+      .catch(() => setTransactions([]))
+      .finally(() => setTxLoading(false));
+  }, []);
+
+  useEffect(() => { loadTransactions(); }, [loadTransactions]);
+
+  if (txLoading) {
+    return (
+      <div className="space-y-4">
+        <div className="h-8 w-48 bg-muted rounded-xl animate-pulse" />
+        {[1,2,3,4,5].map(i => <div key={i} className="h-16 bg-muted rounded-2xl animate-pulse" />)}
+      </div>
+    );
+  }
+
+  const filtered = transactions.filter(t => {
+    if (filter !== 'all' && t.status !== filter) return false;
+    if (search && !t.id.toLowerCase().includes(search.toLowerCase()) && 
+        !t.orderId.toLowerCase().includes(search.toLowerCase()) &&
+        !t.customerName.toLowerCase().includes(search.toLowerCase())) return false;
+    
+    if (dateFilter !== 'all') {
+      const days = parseInt(dateFilter);
+      const cutoff = new Date(Date.now() - 86400000 * days);
+      if (new Date(t.createdAt) < cutoff) return false;
+    }
+    
+    return true;
+  });
+
+  const getStatusColor = (status: string) => {
+    switch(status) {
+      case 'success': return 'bg-green-100 text-green-800';
+      case 'pending': return 'bg-amber-100 text-amber-800';
+      case 'failed': return 'bg-red-100 text-red-800';
+      case 'refunded': return 'bg-slate-200 text-slate-800';
+      default: return 'bg-slate-100 text-slate-800';
+    }
+  };
+
+  const totalAmount = filtered.reduce((sum, t) => sum + t.amount, 0);
+  const successCount = filtered.filter(t => t.status === 'success').length;
+  const failedCount = filtered.filter(t => t.status === 'failed').length;
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-3 flex-wrap">
+        <h2 className="text-2xl font-bold text-foreground">Transaction Logs</h2>
+        <Badge className="bg-primary/10 text-primary neu-inset border-none">{transactions.length} total</Badge>
+        <button onClick={loadTransactions} disabled={txLoading} className="ml-auto flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-sm font-medium bg-card neu-card text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50">
+          <RefreshCw className={`w-4 h-4 ${txLoading ? 'animate-spin' : ''}`} />
+          Refresh
+        </button>
+      </div>
+
+      <div className="flex flex-col gap-4 bg-card p-4 rounded-3xl neu-card">
+        <div className="relative flex-1">
+          <Search className="w-5 h-5 absolute left-4 top-1/2 -translate-y-1/2 text-muted-foreground" />
+          <Input 
+            placeholder="Search by TXN ID, Order ID, or Customer..." 
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="pl-11 h-12 bg-background neu-inset rounded-2xl border-none"
+          />
+        </div>
+        
+        <div className="flex flex-col md:flex-row justify-between gap-4">
+          <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0 scrollbar-hide">
+            {(['all', 'success', 'pending', 'failed', 'refunded'] as const).map(f => (
+              <button
+                key={f}
+                onClick={() => setFilter(f as any)}
+                className={`px-4 py-2 rounded-xl text-sm font-medium capitalize whitespace-nowrap transition-all ${
+                  filter === f ? 'bg-primary text-primary-foreground neu-card' : 'bg-background text-muted-foreground neu-inset'
+                }`}
+              >
+                {f}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex gap-2 overflow-x-auto pb-2 md:pb-0 scrollbar-hide bg-background neu-inset p-1 rounded-2xl">
+            <button onClick={() => setDateFilter('7')} className={`px-4 py-1.5 rounded-xl text-sm font-medium whitespace-nowrap ${dateFilter === '7' ? 'bg-card neu-card text-foreground' : 'text-muted-foreground'}`}>Last 7 days</button>
+            <button onClick={() => setDateFilter('30')} className={`px-4 py-1.5 rounded-xl text-sm font-medium whitespace-nowrap ${dateFilter === '30' ? 'bg-card neu-card text-foreground' : 'text-muted-foreground'}`}>Last 30 days</button>
+            <button onClick={() => setDateFilter('all')} className={`px-4 py-1.5 rounded-xl text-sm font-medium whitespace-nowrap ${dateFilter === 'all' ? 'bg-card neu-card text-foreground' : 'text-muted-foreground'}`}>All time</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="bg-card rounded-3xl neu-card overflow-hidden">
+        {filtered.length === 0 ? (
+          <div className="text-center p-12 text-muted-foreground">
+            <CreditCard className="w-12 h-12 mx-auto mb-4 opacity-20" />
+            <p>No transactions found</p>
+          </div>
+        ) : (
+          <>
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left">
+                <thead className="bg-background/50 text-muted-foreground text-xs uppercase tracking-wider font-semibold border-b border-border/50">
+                  <tr>
+                    <th className="p-4">TXN ID</th>
+                    <th className="p-4">Order ID</th>
+                    <th className="p-4">Customer</th>
+                    <th className="p-4">Vendor</th>
+                    <th className="p-4">Amount</th>
+                    <th className="p-4">Method</th>
+                    <th className="p-4">Status</th>
+                    <th className="p-4">Date</th>
+                  </tr>
+                </thead>
+                <tbody className="text-sm divide-y divide-border/50">
+                  {filtered.map(t => (
+                    <tr key={t.id} className="hover:bg-muted/30 transition-colors">
+                      <td className="p-4 font-mono font-medium text-foreground">{t.id}</td>
+                      <td className="p-4 font-mono text-muted-foreground">{t.orderId}</td>
+                      <td className="p-4">{t.customerName}</td>
+                      <td className="p-4 text-muted-foreground truncate max-w-[150px]">{t.vendorName}</td>
+                      <td className="p-4 font-bold text-foreground">{formatINR(t.amount)}</td>
+                      <td className="p-4"><span className="px-2 py-1 bg-background neu-inset rounded-lg text-xs font-medium">{t.method}</span></td>
+                      <td className="p-4">
+                        <Badge className={`${getStatusColor(t.status)} border-none px-2 py-0.5 capitalize`}>{t.status}</Badge>
+                      </td>
+                      <td className="p-4 text-muted-foreground text-xs">{new Date(t.createdAt).toLocaleString()}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile View */}
+            <div className="md:hidden divide-y divide-border/50">
+              {filtered.map(t => (
+                <div key={t.id} className="p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="font-mono font-bold text-foreground">{t.id}</span>
+                    <Badge className={`${getStatusColor(t.status)} border-none px-2 py-0.5 capitalize`}>{t.status}</Badge>
+                  </div>
+                  <div className="flex justify-between items-center bg-background neu-inset p-3 rounded-2xl">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Order</p>
+                      <p className="font-mono text-sm">{t.orderId}</p>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-xs text-muted-foreground">{t.method}</p>
+                      <p className="font-bold text-lg">{formatINR(t.amount)}</p>
+                    </div>
+                  </div>
+                  <div className="flex justify-between text-sm">
+                    <div>
+                      <p className="text-foreground font-medium">{t.customerName}</p>
+                      <p className="text-xs text-muted-foreground truncate max-w-[150px]">{t.vendorName}</p>
+                    </div>
+                    <div className="text-right text-xs text-muted-foreground pt-1">
+                      {new Date(t.createdAt).toLocaleString()}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+            
+            <div className="bg-background/80 border-t border-border/50 p-4 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-muted-foreground">
+              <div>Showing <span className="font-bold text-foreground">{filtered.length}</span> transactions</div>
+              <div className="flex gap-4">
+                <span>Success: <span className="text-green-600 font-bold">{successCount}</span></span>
+                <span>Failed: <span className="text-red-600 font-bold">{failedCount}</span></span>
+                <span className="bg-card neu-inset px-3 py-1 rounded-xl text-foreground font-bold border border-border">Total: {formatINR(totalAmount)}</span>
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// ADMIN NOTIFICATIONS SECTION
+// ============================================================================
+
+interface BroadcastRecord {
+  _id: string;
+  title: string;
+  message: string;
+  targetAudience: string;
+  sentCount: number;
+  pushSent: number;
+  pushFailed: number;
+  createdAt: string;
+}
+
+interface FcmDiagnostics {
+  totalUsers: number;
+  activeTokens: number;
+  tokensByRole: Record<string, number>;
+  tokensByPlatform: Record<string, number>;
+  lastBroadcast: {
+    title: string;
+    pushSent: number;
+    pushFailed: number;
+    sentCount: number;
+    createdAt: string;
+  } | null;
+  allTimePushSent: number;
+  allTimePushFailed: number;
+}
+
+function AdminNotificationsTab() {
+  const [title, setTitle] = useState("");
+  const [message, setMessage] = useState("");
+  const [targetAudience, setTargetAudience] = useState<"all" | "customers" | "vendors" | "specific">("all");
+  const [targetUserId, setTargetUserId] = useState("");
+  const [imageUrl, setImageUrl] = useState("");
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [redirectType, setRedirectType] = useState<"none" | "product" | "category" | "shop">("none");
+  const [redirectValue, setRedirectValue] = useState("");
+  const [showTimer, setShowTimer] = useState(false);
+  const [timerHours, setTimerHours] = useState("");
+  const [timerMinutes, setTimerMinutes] = useState("");
+  const [progress, setProgress] = useState("");
+  const [sending, setSending] = useState(false);
+  const [history, setHistory] = useState<BroadcastRecord[]>([]);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [loadingHistory, setLoadingHistory] = useState(true);
+  const [diagnostics, setDiagnostics] = useState<FcmDiagnostics | null>(null);
+  const [diagError, setDiagError] = useState<string | null>(null);
+  const [diagLoading, setDiagLoading] = useState(true);
+
+  const fetchDiagnostics = () => {
+    setDiagLoading(true);
+    setDiagError(null);
+    api.get<{ success: boolean } & FcmDiagnostics>("/fcm/diagnostics")
+      .then(d => { setDiagnostics(d); setDiagError(null); })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[AdminNotifications] GET /fcm/diagnostics failed:", msg);
+        setDiagnostics(null);
+        setDiagError(msg);
+      })
+      .finally(() => setDiagLoading(false));
+  };
+
+  const fetchHistory = () => {
+    setLoadingHistory(true);
+    setHistoryError(null);
+    api.get<{ success: boolean; broadcasts: BroadcastRecord[] }>("/notifications/broadcasts")
+      .then(d => { setHistory(d.broadcasts ?? []); setHistoryError(null); })
+      .catch((err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("[AdminNotifications] GET /notifications/broadcasts failed:", msg);
+        setHistory([]);
+        setHistoryError(msg);
+      })
+      .finally(() => setLoadingHistory(false));
+  };
+
+  const handleCustomImageUpload = async (file: File) => {
+    setUploadingImage(true);
+    try {
+      const fd = new FormData();
+      fd.append("image", file);
+      const { access } = api.getTokens();
+      const res = await fetch("/api/upload/banner-image", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${access ?? ""}` },
+        body: fd,
+      });
+      const data = await res.json() as { success: boolean; imageUrl: string };
+      if (data.success) {
+        setImageUrl(data.imageUrl);
+        toast.success("Image uploaded successfully");
+      } else {
+        toast.error("Upload failed");
+      }
+    } catch {
+      toast.error("Upload failed");
+    } finally {
+      setUploadingImage(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchHistory();
+    fetchDiagnostics();
+  }, []);
+
+  const handleSend = async () => {
+    if (!title.trim() || !message.trim()) { toast.error("Title and message are required"); return; }
+    if (targetAudience === "specific" && !targetUserId.trim()) { toast.error("Please enter a User ID"); return; }
+    if (redirectType !== "none" && !redirectValue.trim()) { toast.error("Please enter a Redirect Value (slug or ID)"); return; }
+    
+    let timerSecVal = 0;
+    if (showTimer) {
+      const hrs = parseInt(timerHours, 10) || 0;
+      const mins = parseInt(timerMinutes, 10) || 0;
+      timerSecVal = (hrs * 3600) + (mins * 60);
+      if (timerSecVal <= 0) {
+        toast.error("Please enter a valid timer duration greater than 0");
+        return;
+      }
+    }
+    
+    let progressVal = "";
+    if (progress.trim()) {
+      const p = parseInt(progress, 10);
+      if (isNaN(p) || p < 0 || p > 100) {
+        toast.error("Progress percentage must be between 0 and 100");
+        return;
+      }
+      progressVal = String(p);
+    }
+
+    setSending(true);
+    try {
+      const res = await api.post<{ success: boolean; sentCount: number; pushSent: number; pushFailed: number }>("/notifications/send-custom", {
+        title,
+        message,
+        imageUrl: imageUrl.trim() || undefined,
+        target: targetAudience,
+        targetUserId: targetAudience === "specific" ? targetUserId.trim() : undefined,
+        redirectType,
+        redirectValue: redirectType !== "none" ? redirectValue.trim() : undefined,
+        showTimer: showTimer ? "true" : "false",
+        timerSeconds: showTimer ? String(timerSecVal) : "0",
+        progress: progressVal || undefined,
+      });
+      toast.success(
+        `Saved to ${res.sentCount} user${res.sentCount !== 1 ? "s" : ""}` +
+        (res.pushSent > 0 ? ` · FCM push sent to ${res.pushSent} device${res.pushSent !== 1 ? "s" : ""}` : " · No active FCM devices")
+      );
+      setTitle("");
+      setMessage("");
+      setTargetUserId("");
+      setImageUrl("");
+      setRedirectType("none");
+      setRedirectValue("");
+      setShowTimer(false);
+      setTimerHours("");
+      setTimerMinutes("");
+      setProgress("");
+      fetchHistory();
+      fetchDiagnostics();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to send notification");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const audienceLabels: Record<string, string> = {
+    all: "All Users",
+    customers: "Customers Only",
+    vendors: "Vendors Only",
+    specific: "Specific User",
+  };
+
+  return (
+    <div className="space-y-6">
+
+      {/* ── FCM Diagnostics ──────────────────────────────────────────── */}
+      <div className="bg-card rounded-3xl neu-card overflow-hidden">
+        <div className="flex items-center justify-between p-5 border-b border-border">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
+              <BellRing className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="font-bold text-sm text-foreground">Push Diagnostics (FCM)</h2>
+              <p className="text-xs text-muted-foreground">Firebase Cloud Messaging token health</p>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={fetchDiagnostics}
+            disabled={diagLoading}
+            className="text-xs h-8 px-3 text-muted-foreground hover:text-foreground"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${diagLoading ? "animate-spin" : ""}`} />
+            Refresh
+          </Button>
+        </div>
+
+        {diagLoading ? (
+          <div className="p-5 grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[1,2,3,4].map(i => <div key={i} className="h-16 rounded-2xl bg-muted animate-pulse" />)}
+          </div>
+        ) : diagnostics ? (
+          <>
+            {/* Row 1 — main counts */}
+            <div className="p-5 grid grid-cols-2 md:grid-cols-4 gap-3">
+              {/* Total Users */}
+              <div className="bg-background rounded-2xl neu-inset p-4 flex flex-col gap-1">
+                <span className="text-[11px] text-muted-foreground uppercase tracking-wide font-medium">Total Users</span>
+                <span className="text-2xl font-bold text-foreground">{diagnostics.totalUsers}</span>
+              </div>
+
+              {/* Active FCM tokens */}
+              <div className={`rounded-2xl neu-inset p-4 flex flex-col gap-1 ${
+                diagnostics.activeTokens === 0
+                  ? "bg-red-50 dark:bg-red-950/20"
+                  : "bg-green-50 dark:bg-green-950/20"
+              }`}>
+                <span className="text-[11px] text-muted-foreground uppercase tracking-wide font-medium">Active Devices</span>
+                <span className={`text-2xl font-bold ${diagnostics.activeTokens === 0 ? "text-red-600" : "text-green-600"}`}>
+                  {diagnostics.activeTokens}
+                </span>
+                <span className="text-[10px] text-muted-foreground">FCM tokens</span>
+              </div>
+
+              {/* All-time sent */}
+              <div className="bg-background rounded-2xl neu-inset p-4 flex flex-col gap-1">
+                <span className="text-[11px] text-muted-foreground uppercase tracking-wide font-medium">All-time Sent</span>
+                <span className="text-2xl font-bold text-green-600">{diagnostics.allTimePushSent}</span>
+                <span className="text-[10px] text-muted-foreground">push delivered</span>
+              </div>
+
+              {/* All-time failed */}
+              <div className="bg-background rounded-2xl neu-inset p-4 flex flex-col gap-1">
+                <span className="text-[11px] text-muted-foreground uppercase tracking-wide font-medium">All-time Failed</span>
+                <span className="text-2xl font-bold text-red-500">{diagnostics.allTimePushFailed}</span>
+                <span className="text-[10px] text-muted-foreground">push undelivered</span>
+              </div>
+            </div>
+
+            {/* Row 2 — role breakdown + last delivery */}
+            <div className="px-5 pb-5 grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* By role */}
+              <div className="bg-background rounded-2xl neu-inset p-4">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Tokens by Role</p>
+                {Object.keys(diagnostics.tokensByRole).length === 0 ? (
+                  <p className="text-sm text-muted-foreground">No tokens registered yet</p>
+                ) : (
+                  <div className="space-y-2">
+                    {(["customer", "vendor", "admin", "super_admin"] as const).map(role => {
+                      const cnt = diagnostics.tokensByRole[role] ?? 0;
+                      const max = Math.max(...Object.values(diagnostics.tokensByRole), 1);
+                      return (
+                        <div key={role} className="flex items-center gap-3">
+                          <span className="text-xs text-muted-foreground w-20 capitalize">{role.replace("_", " ")}</span>
+                          <div className="flex-1 bg-muted rounded-full h-1.5 overflow-hidden">
+                            <div
+                              className="h-full bg-primary rounded-full transition-all"
+                              style={{ width: `${(cnt / max) * 100}%` }}
+                            />
+                          </div>
+                          <span className="text-xs font-semibold text-foreground w-6 text-right">{cnt}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Last delivery */}
+              <div className="bg-background rounded-2xl neu-inset p-4">
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Last Broadcast Result</p>
+                {diagnostics.lastBroadcast ? (
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-foreground truncate">{diagnostics.lastBroadcast.title}</p>
+                    <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-green-500 shrink-0" />
+                        <span className="text-xs text-foreground font-semibold">{diagnostics.lastBroadcast.pushSent}</span>
+                        <span className="text-xs text-muted-foreground">delivered</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-red-400 shrink-0" />
+                        <span className="text-xs text-foreground font-semibold">{diagnostics.lastBroadcast.pushFailed}</span>
+                        <span className="text-xs text-muted-foreground">failed</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-blue-400 shrink-0" />
+                        <span className="text-xs text-foreground font-semibold">{diagnostics.lastBroadcast.sentCount}</span>
+                        <span className="text-xs text-muted-foreground">in-app</span>
+                      </div>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground">
+                      {new Date(diagnostics.lastBroadcast.createdAt).toLocaleString()}
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-sm text-muted-foreground">No broadcasts yet</p>
+                )}
+              </div>
+            </div>
+
+            {diagnostics.activeTokens === 0 && (
+              <div className="mx-5 mb-5 flex items-start gap-2 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-2xl p-3">
+                <span className="text-amber-600 text-base shrink-0">⚠️</span>
+                <p className="text-xs text-amber-800 dark:text-amber-300">
+                  <strong>No active FCM tokens.</strong> Users need to open the Notifications page and tap "Enable" to register their device. Push notifications won't deliver until at least one device is registered.
+                </p>
+              </div>
+            )}
+          </>
+        ) : (
+          <div className="p-5 text-center text-sm text-muted-foreground">
+            <p className="font-semibold text-red-500 mb-1">Failed to load diagnostics</p>
+            {diagError && <p className="text-xs font-mono bg-muted rounded px-2 py-1 mt-1 break-all">{diagError}</p>}
+          </div>
+        )}
+      </div>
+
+      {/* Compose */}
+      <div className="bg-card p-6 rounded-3xl neu-card space-y-4">
+        <div className="flex items-center gap-3 mb-2">
+          <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-primary">
+            <Bell className="w-5 h-5" />
+          </div>
+          <div>
+            <h2 className="font-bold text-lg text-foreground">Send Notification</h2>
+            <p className="text-xs text-muted-foreground">Broadcast a message to users on the platform</p>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <label className="text-sm font-medium text-foreground block mb-1">Audience</label>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+              {(["all", "customers", "vendors", "specific"] as const).map(a => (
+                <button
+                  key={a}
+                  onClick={() => setTargetAudience(a)}
+                  className={`px-3 py-2 rounded-xl text-sm font-medium transition-all ${
+                    targetAudience === a
+                      ? "bg-primary text-primary-foreground neu-card"
+                      : "bg-background neu-inset text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {audienceLabels[a]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {targetAudience === "specific" && (
+            <div>
+              <label className="text-sm font-medium text-foreground block mb-1">User ID</label>
+              <Input
+                value={targetUserId}
+                onChange={e => setTargetUserId(e.target.value)}
+                placeholder="Paste user ID (UUID)"
+                className="bg-background neu-inset border-none font-mono text-sm"
+              />
+            </div>
+          )}
+
+          <div>
+            <label className="text-sm font-medium text-foreground block mb-1">Title</label>
+            <Input
+              value={title}
+              onChange={e => setTitle(e.target.value)}
+              placeholder="Notification title"
+              className="bg-background neu-inset border-none"
+            />
+          </div>
+
+          <div>
+            <label className="text-sm font-medium text-foreground block mb-1">Message</label>
+            <Textarea
+              value={message}
+              onChange={e => setMessage(e.target.value)}
+              placeholder="Write your notification message..."
+              rows={3}
+              className="bg-background neu-inset border-none resize-none"
+            />
+          </div>
+
+          {/* Image URL with Upload Option */}
+          <div>
+            <label className="text-sm font-medium text-foreground block mb-1">Image URL (Optional for Rich Push)</label>
+            <div className="flex gap-2">
+              <Input
+                value={imageUrl}
+                onChange={e => setImageUrl(e.target.value)}
+                placeholder="https://example.com/banner.jpg"
+                className="bg-background neu-inset border-none flex-1"
+              />
+              <div className="relative">
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={e => {
+                    const file = e.target.files?.[0];
+                    if (file) handleCustomImageUpload(file);
+                  }}
+                  className="hidden"
+                  id="custom-notif-image-upload"
+                  disabled={uploadingImage}
+                />
+                <Button
+                  asChild
+                  variant="outline"
+                  className="rounded-xl shadow-none h-10 px-4"
+                  disabled={uploadingImage}
+                >
+                  <label htmlFor="custom-notif-image-upload" className="cursor-pointer flex items-center gap-1.5">
+                    {uploadingImage ? (
+                      <>
+                        <RefreshCw className="w-4 h-4 animate-spin" /> Uploading...
+                      </>
+                    ) : (
+                      <>
+                        <Upload className="w-4 h-4" /> Upload
+                      </>
+                    )}
+                  </label>
+                </Button>
+              </div>
+            </div>
+            {imageUrl && (
+              <div className="mt-2 relative w-24 h-16 rounded-xl overflow-hidden border border-border">
+                <img src={imageUrl} className="w-full h-full object-cover" />
+                <button
+                  type="button"
+                  onClick={() => setImageUrl("")}
+                  className="absolute top-1 right-1 bg-black/60 text-white rounded-full p-0.5 hover:bg-black/80 transition-colors"
+                >
+                  <span className="text-[9px] font-bold block px-1">✕</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Deep Linking redirection */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm font-medium text-foreground block mb-1">On Tap Action (Redirect)</label>
+              <select
+                value={redirectType}
+                onChange={e => {
+                  const type = e.target.value as any;
+                  setRedirectType(type);
+                  if (type === "none") setRedirectValue("");
+                }}
+                className="w-full h-10 px-3 rounded-xl bg-background neu-inset border-none text-sm text-foreground appearance-none cursor-pointer"
+              >
+                <option value="none">None (Open App Only)</option>
+                <option value="product">Product Detail Page</option>
+                <option value="category">Category Collection Grid</option>
+                <option value="shop">Seller Shop Front</option>
+              </select>
+            </div>
+
+            {redirectType !== "none" && (
+              <div>
+                <label className="text-sm font-medium text-foreground block mb-1">
+                  {redirectType === "product" && "Product ID (UUID)"}
+                  {redirectType === "category" && "Category Slug (e.g. fruits-vegetables)"}
+                  {redirectType === "shop" && "Shop ID (UUID)"}
+                </label>
+                <Input
+                  value={redirectValue}
+                  onChange={e => setRedirectValue(e.target.value)}
+                  placeholder={
+                    redirectType === "product" ? "e.g. d3b07384-d113..." :
+                    redirectType === "category" ? "e.g. grocery" : "e.g. shop-uuid..."
+                  }
+                  className="bg-background neu-inset border-none"
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Countdown & Progress Styling */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 border-t border-border/40 pt-4">
+            {/* Countdown timer */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-foreground">Include Countdown Timer</label>
+                <input
+                  type="checkbox"
+                  checked={showTimer}
+                  onChange={e => {
+                    setShowTimer(e.target.checked);
+                    if (!e.target.checked) {
+                      setTimerHours("");
+                      setTimerMinutes("");
+                    }
+                  }}
+                  className="w-4 h-4 text-primary rounded border-none bg-background neu-inset cursor-pointer accent-primary"
+                />
+              </div>
+              
+              {showTimer && (
+                <div className="flex gap-2 items-center">
+                  <div className="flex-1">
+                    <label className="text-[10px] text-muted-foreground block mb-0.5">Hours</label>
+                    <Input
+                      type="number"
+                      min="0"
+                      value={timerHours}
+                      onChange={e => setTimerHours(e.target.value)}
+                      placeholder="e.g. 2"
+                      className="bg-background neu-inset border-none h-9 text-xs"
+                    />
+                  </div>
+                  <div className="flex-1">
+                    <label className="text-[10px] text-muted-foreground block mb-0.5">Minutes</label>
+                    <Input
+                      type="number"
+                      min="0"
+                      max="59"
+                      value={timerMinutes}
+                      onChange={e => setTimerMinutes(e.target.value)}
+                      placeholder="e.g. 30"
+                      className="bg-background neu-inset border-none h-9 text-xs"
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Progress percentage */}
+            <div>
+              <label className="text-sm font-medium text-foreground block mb-1">Progress Bar Percentage (Optional, 0-100)</label>
+              <Input
+                type="number"
+                min="0"
+                max="100"
+                value={progress}
+                onChange={e => setProgress(e.target.value)}
+                placeholder="e.g. 75"
+                className="bg-background neu-inset border-none h-10"
+              />
+              <p className="text-[10px] text-muted-foreground mt-1">Leaves progress bar hidden if empty.</p>
+            </div>
+          </div>
+
+          <Button
+            onClick={handleSend}
+            disabled={sending}
+            className="w-full md:w-auto rounded-xl shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90"
+          >
+            {sending ? (
+              <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Sending...</>
+            ) : (
+              <><Send className="w-4 h-4 mr-2" /> Send Notification</>
+            )}
+          </Button>
+        </div>
+      </div>
+
+      {/* History */}
+      <div className="bg-card rounded-3xl neu-card overflow-hidden">
+        <div className="p-6 border-b border-border">
+          <h3 className="font-bold text-lg text-foreground">Broadcast History</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">All notifications sent by admins</p>
+        </div>
+
+        {loadingHistory ? (
+          <div className="p-6 space-y-3">
+            {[1, 2, 3].map(i => (
+              <div key={i} className="h-16 bg-muted rounded-2xl animate-pulse" />
+            ))}
+          </div>
+        ) : historyError ? (
+          <div className="p-8 text-center text-sm text-muted-foreground">
+            <p className="font-semibold text-red-500 mb-1">Failed to load broadcast history</p>
+            <p className="text-xs font-mono bg-muted rounded px-2 py-1 mt-1 break-all">{historyError}</p>
+          </div>
+        ) : history.length === 0 ? (
+          <div className="p-12 text-center text-muted-foreground">
+            <Bell className="w-10 h-10 mx-auto mb-3 opacity-30" />
+            <p className="font-medium">No notifications sent yet</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-border/50">
+            {history.map(b => (
+              <div key={b._id} className="p-4 flex items-start gap-4">
+                <div className="w-9 h-9 rounded-xl bg-primary/10 flex items-center justify-center text-primary shrink-0 mt-0.5">
+                  <Bell className="w-4 h-4" />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-semibold text-foreground text-sm">{b.title}</p>
+                      <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">{b.message}</p>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <Badge className="bg-primary/10 text-primary border-none text-xs capitalize">
+                        {audienceLabels[b.targetAudience] ?? b.targetAudience}
+                      </Badge>
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-2">
+                    <span className="text-[11px] text-muted-foreground">
+                      {new Date(b.createdAt).toLocaleString()}
+                    </span>
+                    <span className="text-[11px] text-blue-600 font-medium">
+                      📥 {b.sentCount} in-app
+                    </span>
+                    {(b.pushSent ?? 0) > 0 && (
+                      <span className="text-[11px] text-green-600 font-medium">
+                        🔔 {b.pushSent} push sent
+                      </span>
+                    )}
+                    {(b.pushFailed ?? 0) > 0 && (
+                      <span className="text-[11px] text-red-500 font-medium">
+                        ✗ {b.pushFailed} push failed
+                      </span>
+                    )}
+                    {(b.pushSent ?? 0) === 0 && (b.pushFailed ?? 0) === 0 && (
+                      <span className="text-[11px] text-muted-foreground">no push devices</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface ApiBanner {
+  _id: string;
+  imageUrl: string;
+  title?: string;
+  subtitle?: string;
+  buttonText?: string;
+  redirectType: "category" | "shop" | "product" | "internal" | "external";
+  redirectValue: string;
+  isActive: boolean;
+  displayOrder: number;
+  views: number;
+  clicks: number;
+  createdAt: string;
+  accentColor?: string;
+}
+
+interface BannerForm {
+  imageUrl: string;
+  title: string;
+  subtitle: string;
+  buttonText: string;
+  redirectType: "category" | "shop" | "product" | "internal" | "external";
+  redirectValue: string;
+  isActive: boolean;
+  displayOrder: number;
+  accentColor: string;
+}
+
+const defaultBannerForm: BannerForm = {
+  imageUrl: "", title: "", subtitle: "", buttonText: "",
+  redirectType: "category", redirectValue: "", isActive: true, displayOrder: 0,
+  accentColor: "#FFFFFF",
+};
+
+const BANNER_LOCATIONS = [
+  { value: "swiftmart", label: "SwiftMart Home (180px, ~16:9/2:1)" },
+  { value: "food", label: "Cafe & Food (160px, ~2.2:1)" },
+  { value: "rakhi", label: "Rakhi Festive (180px)" },
+  { value: "super", label: "Super Store (180px)" },
+  { value: "category", label: "Categories Top Promo (140px)" },
+];
+
+const locationHints: Record<string, string> = {
+  swiftmart: "Aspect ratio: ~16:9 or 2:1 ratio (Height 180px)",
+  food: "Aspect ratio: ~2.2:1 ratio (Height 160px)",
+  rakhi: "Target height: 180px",
+  super: "Target height: 180px",
+  category: "Target height: 140px",
+};
+
+const redirectTypeLabels: Record<string, string> = {
+  category: "Category",
+  shop: "Seller Shop",
+};
+
+
+function HeroBannersTab() {
+  const [banners, setBanners] = useState<ApiBanner[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<BannerForm>(defaultBannerForm);
+  const [saving, setSaving] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  const fetchBanners = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.get<{ success: boolean; banners: ApiBanner[] }>("/hero-banners/admin");
+      if (data && Array.isArray(data.banners) && data.banners.length > 0) {
+        setBanners(data.banners);
+      } else {
+        setBanners(mockBanners as unknown as ApiBanner[]);
+      }
+    } catch {
+      setBanners(mockBanners as unknown as ApiBanner[]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchBanners(); }, [fetchBanners]);
+
+  const handleImageUpload = async (file: File) => {
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("image", file);
+      const { access } = api.getTokens();
+      const res = await fetch("/api/upload/banner-image", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${access ?? ""}` },
+        body: fd,
+      });
+      const data = await res.json() as { success: boolean; imageUrl: string };
+      if (data.success) setForm(f => ({ ...f, imageUrl: data.imageUrl }));
+      else toast.error("Upload failed");
+    } catch { toast.error("Upload failed"); } finally {
+      setUploading(false);
+    }
+  };
+
+  const openCreate = () => {
+    setEditingId(null);
+    setForm(defaultBannerForm);
+    setShowForm(true);
+  };
+
+  const openEdit = (b: ApiBanner) => {
+    setEditingId(b._id);
+    setForm({
+      imageUrl: b.imageUrl || "",
+      title: b.title ?? "",
+      subtitle: b.subtitle ?? "",
+      buttonText: b.buttonText ?? "",
+      redirectType: b.redirectType || "category",
+      redirectValue: b.redirectValue || "",
+      isActive: b.isActive ?? true,
+      displayOrder: b.displayOrder ?? 1,
+      accentColor: b.accentColor ?? "#6964fe",
+    });
+    setShowForm(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.imageUrl) { toast.error("Please upload a banner image"); return; }
+    if (!form.redirectValue.trim()) { toast.error("Redirect target is required"); return; }
+    setSaving(true);
+    try {
+      if (editingId) {
+        await api.patch(`/hero-banners/${editingId}`, form);
+        toast.success("Banner updated");
+      } else {
+        await api.post("/hero-banners", form);
+        toast.success("Banner created");
+      }
+      setShowForm(false);
+      setEditingId(null);
+      setForm(defaultBannerForm);
+      fetchBanners();
+    } catch (e) {
+      toast.error((e as Error).message ?? "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm("Delete this banner? This cannot be undone.")) return;
+    try {
+      await api.delete(`/hero-banners/${id}`);
+      toast.success("Banner deleted");
+      fetchBanners();
+    } catch { toast.error("Delete failed"); }
+  };
+
+  const handleToggleActive = async (b: ApiBanner) => {
+    try {
+      await api.patch(`/hero-banners/${b._id}`, { isActive: !b.isActive });
+      fetchBanners();
+    } catch { toast.error("Update failed"); }
+  };
+
+  const safeBanners = Array.isArray(banners) && banners.length > 0 ? banners : (mockBanners as unknown as ApiBanner[]);
+  const totalViews = safeBanners.reduce((s, b) => s + (b?.views ?? 0), 0);
+  const totalClicks = safeBanners.reduce((s, b) => s + (b?.clicks ?? 0), 0);
+  const overallCtr = totalViews > 0 ? ((totalClicks / totalViews) * 100).toFixed(1) : "0.0";
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold text-foreground">Hero Banners</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">Manage homepage banners with click &amp; view analytics</p>
+        </div>
+        <Button
+          onClick={openCreate}
+          className="rounded-xl shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90"
+        >
+          <Plus className="w-4 h-4 mr-2" /> Add Banner
+        </Button>
+      </div>
+
+      {/* Analytics summary */}
+      <div className="grid grid-cols-3 gap-4">
+        {[
+          { label: "Total Views", value: totalViews.toLocaleString(), color: "text-blue-600", bg: "bg-blue-500/10" },
+          { label: "Total Clicks", value: totalClicks.toLocaleString(), color: "text-emerald-600", bg: "bg-emerald-500/10" },
+          { label: "Overall CTR", value: `${overallCtr}%`, color: "text-primary", bg: "bg-primary/10" },
+        ].map(({ label, value, color, bg }) => (
+          <div key={label} className={`rounded-2xl p-4 neu-card ${bg}`}>
+            <div className={`text-2xl font-bold ${color}`}>{value}</div>
+            <div className="text-xs text-muted-foreground mt-0.5">{label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Create / Edit form */}
+      {showForm && (
+        <div className="bg-card rounded-3xl neu-card p-6 space-y-5">
+          <div className="flex items-center justify-between">
+            <h3 className="font-bold text-lg">{editingId ? "Edit Banner" : "New Banner"}</h3>
+            <button onClick={() => setShowForm(false)} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {/* Image upload */}
+          <div>
+            <label className="text-sm font-semibold block mb-2">Banner Image <span className="text-destructive">*</span></label>
+            {form.imageUrl ? (
+              <div className="relative rounded-xl overflow-hidden">
+                <img src={form.imageUrl} alt="Preview" className="w-full h-44 object-cover" />
+                <button
+                  className="absolute top-2 right-2 bg-black/60 hover:bg-black/80 text-white rounded-full p-1.5 transition-colors"
+                  onClick={() => setForm(f => ({ ...f, imageUrl: "" }))}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ) : (
+              <label className="flex flex-col items-center justify-center gap-3 border-2 border-dashed border-border rounded-xl p-10 cursor-pointer hover:border-primary/60 transition-colors text-center">
+                {uploading ? (
+                  <>
+                    <RefreshCw className="w-8 h-8 text-primary animate-spin" />
+                    <span className="text-sm text-muted-foreground">Uploading…</span>
+                  </>
+                ) : (
+                  <>
+                    <ImageIcon className="w-9 h-9 text-muted-foreground/50" />
+                    <span className="text-sm font-medium text-muted-foreground">Click to upload banner image</span>
+                    <span className="text-xs text-muted-foreground">JPG, PNG, WebP — max 5 MB</span>
+                  </>
+                )}
+                <input
+                  type="file"
+                  className="hidden"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={e => e.target.files?.[0] && handleImageUpload(e.target.files[0])}
+                  disabled={uploading}
+                />
+              </label>
+            )}
+            {form.title && (
+              <p className="text-xs text-primary mt-1.5 font-medium">
+                💡 {locationHints[form.title] ?? "Recommended: high-quality landscape image"}
+              </p>
+            )}
+          </div>
+
+          {/* Title (Dropdown) / Subtitle / Button Text */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div>
+              <label className="text-sm font-medium block mb-1">Banner Location / Target Page <span className="text-destructive">*</span></label>
+              <select
+                value={form.title}
+                onChange={e => setForm(f => ({ ...f, title: e.target.value }))}
+                className="w-full h-10 px-3 rounded-xl bg-background neu-inset border-none text-sm text-foreground appearance-none cursor-pointer"
+              >
+                <option value="">Select location…</option>
+                {BANNER_LOCATIONS.map(loc => (
+                  <option key={loc.value} value={loc.value}>{loc.label}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-sm font-medium block mb-1">Subtitle / Promo Text</label>
+              <Input
+                value={form.subtitle}
+                onChange={e => setForm(f => ({ ...f, subtitle: e.target.value }))}
+                placeholder="Supporting description text"
+                className="bg-background neu-inset border-none"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium block mb-1">Button Text</label>
+              <Input
+                value={form.buttonText}
+                onChange={e => setForm(f => ({ ...f, buttonText: e.target.value }))}
+                placeholder="e.g. Shop Now"
+                className="bg-background neu-inset border-none"
+              />
+            </div>
+          </div>
+
+          {/* Redirect Type + Value */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="text-sm font-medium block mb-1">Redirect Type <span className="text-destructive">*</span></label>
+              <select
+                value={form.redirectType}
+                onChange={e => setForm(f => ({ ...f, redirectType: e.target.value as BannerForm["redirectType"], redirectValue: "" }))}
+                className="w-full h-10 px-3 rounded-xl bg-background neu-inset border-none text-sm text-foreground appearance-none cursor-pointer"
+              >
+                {(["category", "shop"] as const).map(t => (
+                  <option key={t} value={t}>{redirectTypeLabels[t]}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-sm font-medium block mb-1">
+                Redirect Value (Category Slug or Shop UUID) <span className="text-destructive">*</span>
+              </label>
+              <Input
+                value={form.redirectValue}
+                onChange={e => setForm(f => ({ ...f, redirectValue: e.target.value }))}
+                placeholder={form.redirectType === "category" ? "e.g. fruits-vegetables" : "Enter Shop UUID (e.g. dfd4bed1-...)"}
+                className="bg-background neu-inset border-none"
+              />
+            </div>
+          </div>
+
+          {/* Display Order + Active + Accent Color */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5 items-end">
+            <div>
+              <label className="text-sm font-medium block mb-1">Display Order</label>
+              <Input
+                type="number"
+                min={0}
+                value={form.displayOrder}
+                onChange={e => setForm(f => ({ ...f, displayOrder: Number(e.target.value) }))}
+                className="bg-background neu-inset border-none"
+              />
+            </div>
+            <div>
+              <label className="text-sm font-medium block mb-1">Accent Color (Fallback Background)</label>
+              <div className="flex gap-2 items-center">
+                <input
+                  type="color"
+                  value={form.accentColor || "#FFFFFF"}
+                  onChange={e => setForm(f => ({ ...f, accentColor: e.target.value }))}
+                  className="w-10 h-10 border border-border rounded-xl cursor-pointer p-0.5"
+                />
+                <Input
+                  value={form.accentColor}
+                  onChange={e => setForm(f => ({ ...f, accentColor: e.target.value }))}
+                  placeholder="#FFFFFF"
+                  className="bg-background neu-inset border-none"
+                />
+              </div>
+            </div>
+            <div className="flex items-center gap-3 pb-2">
+              <button
+                type="button"
+                onClick={() => setForm(f => ({ ...f, isActive: !f.isActive }))}
+                className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${form.isActive ? "bg-primary" : "bg-muted"}`}
+              >
+                <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${form.isActive ? "translate-x-5" : "translate-x-0"}`} />
+              </button>
+              <span className="text-sm text-muted-foreground">{form.isActive ? "Active — visible to users" : "Inactive — hidden"}</span>
+            </div>
+          </div>
+
+          {/* Actions */}
+          <div className="flex justify-end gap-3 pt-1">
+            <Button variant="outline" onClick={() => setShowForm(false)} className="rounded-xl">
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSave}
+              disabled={saving || uploading}
+              className="rounded-xl shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90"
+            >
+              {saving ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Saving…</> : editingId ? "Update Banner" : "Create Banner"}
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Banner list */}
+      {loading ? (
+        <div className="space-y-3">
+          {[1, 2, 3].map(i => <div key={i} className="h-24 bg-muted rounded-2xl animate-pulse" />)}
+        </div>
+      ) : safeBanners.length === 0 ? (
+        <div className="bg-card rounded-3xl neu-card p-16 text-center">
+          <ImageIcon className="w-12 h-12 mx-auto mb-3 text-muted-foreground opacity-25" />
+          <p className="font-semibold text-muted-foreground">No hero banners yet</p>
+          <p className="text-sm text-muted-foreground mt-1">Create your first banner to display on the homepage.</p>
+        </div>
+      ) : (
+        <div className="bg-card rounded-3xl neu-card overflow-hidden">
+          <div className="p-5 border-b border-border flex items-center justify-between">
+            <h3 className="font-bold text-foreground">All Banners ({safeBanners.length})</h3>
+            <span className="text-xs text-muted-foreground">Sorted by display order</span>
+          </div>
+          <div className="divide-y divide-border/50">
+            {safeBanners.map(b => {
+              const bViews = b?.views ?? 0;
+              const bClicks = b?.clicks ?? 0;
+              const ctr = bViews > 0 ? ((bClicks / bViews) * 100).toFixed(1) : "0.0";
+              return (
+                <div key={b._id} className="p-4 flex items-center gap-4">
+                  <div className="w-20 h-14 rounded-xl overflow-hidden bg-muted flex-shrink-0 border border-border/50">
+                    <img src={b.imageUrl} alt={b.title ?? "Banner"} className="w-full h-full object-cover" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 mb-0.5">
+                      <p className="font-semibold text-sm text-foreground truncate">
+                        {b.title || <span className="text-muted-foreground italic">(No title)</span>}
+                      </p>
+                      <Badge className={`text-[10px] border-none shrink-0 px-2 py-0 ${b.isActive ? "bg-emerald-500/10 text-emerald-600" : "bg-muted text-muted-foreground"}`}>
+                        {b.isActive ? "Active" : "Inactive"}
+                      </Badge>
+                    </div>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {redirectTypeLabels[b.redirectType]} → {b.redirectValue}
+                      {b.buttonText && <span className="ml-2 text-primary/70">· "{b.buttonText}"</span>}
+                    </p>
+                    <div className="flex items-center gap-4 mt-1.5">
+                      <span className="text-xs text-muted-foreground flex items-center gap-1">
+                        <Eye className="w-3 h-3" /> {(b?.views ?? 0).toLocaleString()} views
+                      </span>
+                      <span className="text-xs text-muted-foreground flex items-center gap-1">
+                        <BarChart2 className="w-3 h-3" /> {(b?.clicks ?? 0).toLocaleString()} clicks
+                      </span>
+                      <span className="text-xs font-semibold text-primary">CTR {ctr}%</span>
+                      <span className="text-xs text-muted-foreground">Order #{b.displayOrder}</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      onClick={() => handleToggleActive(b)}
+                      title={b.isActive ? "Deactivate" : "Activate"}
+                      className={`relative w-9 h-5 rounded-full transition-colors duration-200 ${b.isActive ? "bg-primary" : "bg-muted"}`}
+                    >
+                      <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${b.isActive ? "translate-x-4" : "translate-x-0"}`} />
+                    </button>
+                    <button
+                      onClick={() => openEdit(b)}
+                      className="p-2 rounded-xl hover:bg-muted text-muted-foreground transition-colors"
+                      title="Edit"
+                    >
+                      <Edit2 className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => handleDelete(b._id)}
+                      className="p-2 rounded-xl hover:bg-destructive/10 text-destructive transition-colors"
+                      title="Delete"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Coupons Tab ─────────────────────────────────────────────────────────────
+
+interface ApiCoupon {
+  _id: string;
+  code: string;
+  type: 'percentage' | 'fixed';
+  value: number;
+  minimumOrder: number;
+  maximumDiscount?: number;
+  expiryDate: string;
+  usageLimit: number;
+  usedCount: number;
+  isActive: boolean;
+  appliesTo: string;
+  createdAt: string;
+}
+
+type CouponForm = {
+  code: string;
+  type: 'percentage' | 'fixed';
+  value: string;
+  minimumOrder: string;
+  maximumDiscount: string;
+  expiryDate: string;
+  usageLimit: string;
+  isActive: boolean;
+};
+
+const emptyCouponForm = (): CouponForm => ({
+  code: '',
+  type: 'percentage',
+  value: '',
+  minimumOrder: '0',
+  maximumDiscount: '',
+  expiryDate: '',
+  usageLimit: '0',
+  isActive: true,
+});
+
+function CouponsTab() {
+  const [coupons, setCoupons] = useState<ApiCoupon[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<CouponForm>(emptyCouponForm());
+  const [saving, setSaving] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.get<{ success: boolean; coupons: ApiCoupon[] }>('/coupons');
+      setCoupons(data.coupons);
+    } catch {
+      toast.error('Failed to load coupons');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const openCreate = () => {
+    setEditingId(null);
+    setForm(emptyCouponForm());
+    setShowForm(true);
+  };
+
+  const openEdit = (c: ApiCoupon) => {
+    setEditingId(c._id);
+    setForm({
+      code: c.code,
+      type: c.type,
+      value: String(c.value),
+      minimumOrder: String(c.minimumOrder),
+      maximumDiscount: c.maximumDiscount != null ? String(c.maximumDiscount) : '',
+      expiryDate: c.expiryDate ? c.expiryDate.slice(0, 10) : '',
+      usageLimit: String(c.usageLimit),
+      isActive: c.isActive,
+    });
+    setShowForm(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.code.trim()) { toast.error('Coupon code is required'); return; }
+    if (!form.value || Number(form.value) <= 0) { toast.error('Discount value must be positive'); return; }
+    if (!form.expiryDate) { toast.error('Expiry date is required'); return; }
+    if (form.type === 'percentage' && Number(form.value) > 100) { toast.error('Percentage cannot exceed 100'); return; }
+
+    setSaving(true);
+    const payload: Record<string, unknown> = {
+      code: form.code.toUpperCase().trim(),
+      type: form.type,
+      value: Number(form.value),
+      minimumOrder: Number(form.minimumOrder) || 0,
+      expiryDate: form.expiryDate,
+      usageLimit: Number(form.usageLimit) || 0,
+      isActive: form.isActive,
+    };
+    if (form.type === 'percentage' && form.maximumDiscount) {
+      payload.maximumDiscount = Number(form.maximumDiscount);
+    }
+
+    try {
+      if (editingId) {
+        await api.patch<{ success: boolean }>(`/coupons/${editingId}`, payload);
+        toast.success('Coupon updated');
+      } else {
+        await api.post<{ success: boolean }>('/coupons', payload);
+        toast.success('Coupon created');
+      }
+      setShowForm(false);
+      load();
+    } catch (e: unknown) {
+      const msg = (e as { message?: string })?.message ?? 'Save failed';
+      toast.error(msg);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleActive = async (c: ApiCoupon) => {
+    try {
+      await api.patch<{ success: boolean }>(`/coupons/${c._id}`, { isActive: !c.isActive });
+      setCoupons(prev => prev.map(x => x._id === c._id ? { ...x, isActive: !c.isActive } : x));
+      toast.success(c.isActive ? 'Coupon disabled' : 'Coupon enabled');
+    } catch {
+      toast.error('Failed to update coupon');
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await api.delete<{ success: boolean }>(`/coupons/${id}`);
+      setCoupons(prev => prev.filter(c => c._id !== id));
+      setDeleteConfirm(null);
+      toast.success('Coupon deleted');
+    } catch {
+      toast.error('Failed to delete coupon');
+    }
+  };
+
+  const setField = <K extends keyof CouponForm>(k: K, v: CouponForm[K]) =>
+    setForm(f => ({ ...f, [k]: v }));
+
+  const typeLabel = (t: string) => t === 'percentage' ? 'Percentage' : t === 'fixed' ? 'Flat' : 'Free Delivery';
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-foreground">Coupons</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">Manage discount coupons for the platform</p>
+        </div>
+        <Button
+          onClick={openCreate}
+          className="rounded-xl shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90 flex items-center gap-2"
+        >
+          <Plus className="w-4 h-4" /> New Coupon
+        </Button>
+      </div>
+
+      {/* Create / Edit Form */}
+      <AnimatePresence>
+        {showForm && (
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            className="bg-card rounded-3xl neu-card p-6 space-y-5"
+          >
+            <h3 className="font-bold text-foreground text-lg">
+              {editingId ? 'Edit Coupon' : 'Create Coupon'}
+            </h3>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {/* Code */}
+              <div>
+                <label className="text-sm font-medium block mb-1">
+                  Coupon Code <span className="text-destructive">*</span>
+                </label>
+                <Input
+                  value={form.code}
+                  onChange={e => setField('code', e.target.value.toUpperCase())}
+                  placeholder="e.g. SAVE20"
+                  disabled={!!editingId}
+                  className="bg-background neu-inset border-none font-mono tracking-widest uppercase"
+                />
+                {editingId && (
+                  <p className="text-xs text-muted-foreground mt-1">Code cannot be changed after creation.</p>
+                )}
+              </div>
+
+              {/* Type */}
+              <div>
+                <label className="text-sm font-medium block mb-1">Discount Type <span className="text-destructive">*</span></label>
+                <select
+                  value={form.type}
+                  onChange={e => setField('type', e.target.value as 'percentage' | 'fixed')}
+                  disabled={!!editingId}
+                  className="w-full h-10 px-3 rounded-xl bg-background neu-inset border-none text-sm text-foreground appearance-none cursor-pointer"
+                >
+                  <option value="percentage">Percentage (%)</option>
+                  <option value="fixed">Flat (₹)</option>
+                </select>
+              </div>
+
+              {/* Value */}
+              <div>
+                <label className="text-sm font-medium block mb-1">
+                  Discount Value <span className="text-destructive">*</span>
+                  <span className="ml-1 text-muted-foreground font-normal">
+                    ({form.type === 'percentage' ? '%' : '₹'})
+                  </span>
+                </label>
+                <Input
+                  type="number"
+                  min={1}
+                  max={form.type === 'percentage' ? 100 : undefined}
+                  value={form.value}
+                  onChange={e => setField('value', e.target.value)}
+                  placeholder={form.type === 'percentage' ? '10' : '50'}
+                  className="bg-background neu-inset border-none"
+                />
+              </div>
+
+              {/* Min order */}
+              <div>
+                <label className="text-sm font-medium block mb-1">Minimum Order (₹)</label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={form.minimumOrder}
+                  onChange={e => setField('minimumOrder', e.target.value)}
+                  placeholder="0"
+                  className="bg-background neu-inset border-none"
+                />
+              </div>
+
+              {/* Max discount — percentage only */}
+              {form.type === 'percentage' && (
+                <div>
+                  <label className="text-sm font-medium block mb-1">
+                    Max Discount (₹)
+                    <span className="ml-1 text-muted-foreground font-normal text-xs">optional cap</span>
+                  </label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={form.maximumDiscount}
+                    onChange={e => setField('maximumDiscount', e.target.value)}
+                    placeholder="e.g. 200"
+                    className="bg-background neu-inset border-none"
+                  />
+                </div>
+              )}
+
+              {/* Expiry */}
+              <div>
+                <label className="text-sm font-medium block mb-1">
+                  Expiry Date <span className="text-destructive">*</span>
+                </label>
+                <Input
+                  type="date"
+                  value={form.expiryDate}
+                  min={new Date().toISOString().slice(0, 10)}
+                  onChange={e => setField('expiryDate', e.target.value)}
+                  className="bg-background neu-inset border-none"
+                />
+              </div>
+
+              {/* Usage limit */}
+              <div>
+                <label className="text-sm font-medium block mb-1">
+                  Usage Limit
+                  <span className="ml-1 text-muted-foreground font-normal text-xs">0 = unlimited</span>
+                </label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={form.usageLimit}
+                  onChange={e => setField('usageLimit', e.target.value)}
+                  placeholder="0"
+                  className="bg-background neu-inset border-none"
+                />
+              </div>
+
+              {/* Status toggle */}
+              <div className="flex items-center gap-3 self-end pb-1">
+                <button
+                  type="button"
+                  onClick={() => setField('isActive', !form.isActive)}
+                  className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${form.isActive ? 'bg-primary' : 'bg-muted'}`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${form.isActive ? 'translate-x-5' : 'translate-x-0'}`} />
+                </button>
+                <span className="text-sm text-muted-foreground">{form.isActive ? 'Active — usable by customers' : 'Inactive — disabled'}</span>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-1">
+              <Button variant="outline" onClick={() => setShowForm(false)} className="rounded-xl">Cancel</Button>
+              <Button
+                onClick={handleSave}
+                disabled={saving}
+                className="rounded-xl shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                {saving ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Saving…</> : editingId ? 'Update Coupon' : 'Create Coupon'}
+              </Button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Coupon list */}
+      {loading ? (
+        <div className="space-y-3">
+          {[1, 2, 3].map(i => <div key={i} className="h-20 bg-muted rounded-2xl animate-pulse" />)}
+        </div>
+      ) : coupons.length === 0 ? (
+        <div className="bg-card rounded-3xl neu-card p-16 text-center">
+          <Tag className="w-12 h-12 mx-auto mb-3 text-muted-foreground opacity-25" />
+          <p className="font-semibold text-muted-foreground">No coupons yet</p>
+          <p className="text-sm text-muted-foreground mt-1">Create your first coupon to offer discounts to customers.</p>
+        </div>
+      ) : (
+        <div className="bg-card rounded-3xl neu-card overflow-hidden">
+          <div className="p-5 border-b border-border flex items-center justify-between">
+            <h3 className="font-bold text-foreground">All Coupons ({coupons.length})</h3>
+            <span className="text-xs text-muted-foreground">Latest first</span>
+          </div>
+
+          {/* Table header — desktop */}
+          <div className="hidden md:grid grid-cols-[1fr_90px_90px_100px_100px_80px_80px_110px] gap-3 px-5 py-3 border-b border-border/50 bg-muted/30">
+            {['Code', 'Type', 'Value', 'Min Order', 'Expiry', 'Limit', 'Used', 'Status / Actions'].map(h => (
+              <span key={h} className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">{h}</span>
+            ))}
+          </div>
+
+          <div className="divide-y divide-border/50">
+            {coupons.map(c => {
+              const expired = new Date(c.expiryDate) < new Date();
+              const exhausted = c.usageLimit > 0 && c.usedCount >= c.usageLimit;
+              const isDeleting = deleteConfirm === c._id;
+
+              return (
+                <div key={c._id}>
+                  {/* Desktop row */}
+                  <div className="hidden md:grid grid-cols-[1fr_90px_90px_100px_100px_80px_80px_110px] gap-3 px-5 py-4 items-center">
+                    <span className="font-mono font-bold text-sm text-foreground tracking-wider">{c.code}</span>
+                    <span className="text-sm text-muted-foreground">{typeLabel(c.type)}</span>
+                    <span className="text-sm font-semibold text-foreground">
+                      {c.type === 'percentage' ? `${c.value}%` : formatINR(c.value)}
+                      {c.type === 'percentage' && c.maximumDiscount ? <span className="text-xs text-muted-foreground font-normal ml-1">max {formatINR(c.maximumDiscount)}</span> : null}
+                    </span>
+                    <span className="text-sm text-muted-foreground">{c.minimumOrder > 0 ? formatINR(c.minimumOrder) : '—'}</span>
+                    <span className={`text-sm ${expired ? 'text-destructive' : 'text-muted-foreground'}`}>
+                      {new Date(c.expiryDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}
+                    </span>
+                    <span className="text-sm text-muted-foreground">{c.usageLimit > 0 ? c.usageLimit : '∞'}</span>
+                    <span className={`text-sm font-semibold ${exhausted ? 'text-destructive' : 'text-foreground'}`}>{c.usedCount}</span>
+                    <div className="flex items-center gap-1.5">
+                      <Badge className={`text-[10px] border-none px-2 py-0 shrink-0 ${
+                        expired ? 'bg-red-500/10 text-red-600' :
+                        exhausted ? 'bg-amber-500/10 text-amber-600' :
+                        c.isActive ? 'bg-emerald-500/10 text-emerald-600' : 'bg-muted text-muted-foreground'
+                      }`}>
+                        {expired ? 'Expired' : exhausted ? 'Exhausted' : c.isActive ? 'Active' : 'Inactive'}
+                      </Badge>
+                      {!expired && (
+                        <button
+                          onClick={() => handleToggleActive(c)}
+                          title={c.isActive ? 'Disable' : 'Enable'}
+                          className={`relative w-8 h-4.5 rounded-full transition-colors duration-200 shrink-0 ${c.isActive ? 'bg-primary' : 'bg-muted'}`}
+                          style={{ height: '18px', width: '32px' }}
+                        >
+                          <span className={`absolute top-0.5 left-0.5 w-3.5 h-3.5 bg-white rounded-full shadow transition-transform duration-200 ${c.isActive ? 'translate-x-3.5' : 'translate-x-0'}`} />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => openEdit(c)}
+                        className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground transition-colors"
+                        title="Edit"
+                      >
+                        <Edit2 className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => setDeleteConfirm(c._id)}
+                        className="p-1.5 rounded-lg hover:bg-destructive/10 text-destructive transition-colors"
+                        title="Delete"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Mobile card */}
+                  <div className="md:hidden p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-mono font-bold text-base text-foreground tracking-wider">{c.code}</span>
+                      <Badge className={`text-[10px] border-none px-2 py-0 ${
+                        expired ? 'bg-red-500/10 text-red-600' :
+                        exhausted ? 'bg-amber-500/10 text-amber-600' :
+                        c.isActive ? 'bg-emerald-500/10 text-emerald-600' : 'bg-muted text-muted-foreground'
+                      }`}>
+                        {expired ? 'Expired' : exhausted ? 'Exhausted' : c.isActive ? 'Active' : 'Inactive'}
+                      </Badge>
+                    </div>
+                    <div className="flex flex-wrap gap-3 text-sm text-muted-foreground">
+                      <span>{typeLabel(c.type)} · {c.type === 'percentage' ? `${c.value}%` : formatINR(c.value)}</span>
+                      {c.minimumOrder > 0 && <span>Min {formatINR(c.minimumOrder)}</span>}
+                      <span className={expired ? 'text-destructive' : ''}>
+                        Expires {new Date(c.expiryDate).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' })}
+                      </span>
+                      <span>Used {c.usedCount}{c.usageLimit > 0 ? `/${c.usageLimit}` : ''}</span>
+                    </div>
+                    <div className="flex items-center gap-2 pt-1">
+                      {!expired && (
+                        <button
+                          onClick={() => handleToggleActive(c)}
+                          className={`relative w-9 h-5 rounded-full transition-colors duration-200 ${c.isActive ? 'bg-primary' : 'bg-muted'}`}
+                        >
+                          <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${c.isActive ? 'translate-x-4' : 'translate-x-0'}`} />
+                        </button>
+                      )}
+                      <button onClick={() => openEdit(c)} className="p-2 rounded-xl hover:bg-muted text-muted-foreground transition-colors"><Edit2 className="w-4 h-4" /></button>
+                      <button onClick={() => setDeleteConfirm(c._id)} className="p-2 rounded-xl hover:bg-destructive/10 text-destructive transition-colors"><Trash2 className="w-4 h-4" /></button>
+                    </div>
+                  </div>
+
+                  {/* Delete confirm inline */}
+                  {isDeleting && (
+                    <div className="px-5 py-3 bg-destructive/5 border-t border-destructive/20 flex items-center justify-between gap-3">
+                      <span className="text-sm text-destructive font-medium">Delete coupon <span className="font-mono font-bold">{c.code}</span>? This cannot be undone.</span>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="outline" onClick={() => setDeleteConfirm(null)} className="rounded-lg h-8">Cancel</Button>
+                        <Button size="sm" onClick={() => handleDelete(c._id)} className="rounded-lg h-8 bg-destructive text-white hover:bg-destructive/90 shadow-none">Delete</Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// SHOPS MANAGEMENT TAB
+// ============================================================================
+
+interface ApiShopFull {
+  _id: string;
+  shopName: string;
+  ownerName: string;
+  phone: string;
+  ownerId: string;
+  shopType: string;
+  category?: string;
+  description?: string;
+  image?: string;
+  status: 'pending' | 'approved' | 'rejected' | 'banned';
+  isOpen: boolean;
+  rating: number;
+  totalOrders: number;
+  totalRevenue: number;
+  address?: { line1?: string; city?: string; pincode?: string; state?: string };
+  createdAt: string;
+}
+
+interface ApiProductFull {
+  _id: string;
+  name: string;
+  description?: string;
+  price: number;
+  discountedPrice?: number;
+  category: string;
+  shopId: string;
+  images: string[];
+  stock: number;
+  unit?: string;
+  status: 'active' | 'inactive' | 'out_of_stock';
+  trending: boolean;
+  createdAt: string;
+}
+
+type ShopForm = {
+  shopName: string;
+  ownerPhone: string;
+  ownerName: string;
+  addressLine1: string;
+  addressCity: string;
+  addressPincode: string;
+  shopType: string;
+  description: string;
+  isOpen: boolean;
+  image: string;
+};
+
+const emptyShopForm = (): ShopForm => ({
+  shopName: '', ownerPhone: '', ownerName: '', addressLine1: '',
+  addressCity: '', addressPincode: '', shopType: 'groceries',
+  description: '', isOpen: true, image: '',
+});
+
+type ProductForm = {
+  name: string;
+  description: string;
+  price: string;
+  discountedPrice: string;
+  category: string;
+  subcategory: string;
+  stock: string;
+  unit: string;
+  status: 'active' | 'inactive';
+  images: string[];
+};
+
+const emptyProductForm = (): ProductForm => ({
+  name: '', description: '', price: '', discountedPrice: '',
+  category: 'groceries', subcategory: '', stock: '0', unit: 'piece', status: 'active', images: [],
+});
+
+function ShopsManagementTab() {
+  const [subView, setSubView] = useState<'shops' | 'products'>('shops');
+  const [selectedShop, setSelectedShop] = useState<ApiShopFull | null>(null);
+
+  if (subView === 'products' && selectedShop) {
+    return (
+      <ShopProductsPanel
+        shop={selectedShop}
+        onBack={() => { setSubView('shops'); setSelectedShop(null); }}
+      />
+    );
+  }
+
+  return (
+    <ShopListPanel
+      onManageProducts={(shop) => { setSelectedShop(shop); setSubView('products'); }}
+    />
+  );
+}
+
+function ShopListPanel({ onManageProducts }: { onManageProducts: (shop: ApiShopFull) => void }) {
+  const { isLoading: authLoading } = useAuth();
+  const [shops, setShops] = useState<ApiShopFull[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'approved' | 'pending' | 'rejected' | 'banned'>('all');
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<ShopForm>(emptyShopForm());
+  const [saving, setSaving] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [changingOwnerId, setChangingOwnerId] = useState<string | null>(null);
+  const [ownerPhone, setOwnerPhone] = useState('');
+  const [ownerNameInput, setOwnerNameInput] = useState('');
+  const [ownerSaving, setOwnerSaving] = useState(false);
+  const [linkingOwnerId, setLinkingOwnerId] = useState<string | null>(null);
+  const [linkPhone, setLinkPhone] = useState('');
+  const [linkEmail, setLinkEmail] = useState('');
+  const [linkSaving, setLinkSaving] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [downloadingStickerId, setDownloadingStickerId] = useState<string | null>(null);
+
+  const handleDownloadSticker = async (shop: ApiShopFull) => {
+    setDownloadingStickerId(shop._id);
+    try {
+      let qrToken = shop._id;
+      let storeCode = `SM-BLR-${shop._id.slice(0, 4).toUpperCase()}`;
+      try {
+        const qrInfo = await api.get<{
+          success: boolean;
+          shop: { id: string; shopName: string; storeCode?: string; pickupQrToken: string; phone?: string };
+        }>(`/delivery/store/${shop._id}/qr`);
+        if (qrInfo.shop?.pickupQrToken) qrToken = qrInfo.shop.pickupQrToken;
+        if (qrInfo.shop?.storeCode) storeCode = qrInfo.shop.storeCode;
+      } catch {}
+
+      const addressStr = [shop.address?.line1, shop.address?.city, shop.address?.pincode].filter(Boolean).join(", ") || "Balurghat, West Bengal";
+
+      await downloadPickupSticker({
+        shopId: shop._id,
+        shopName: shop.shopName,
+        storeCode: storeCode,
+        pickupQrToken: qrToken,
+        address: addressStr,
+        phone: shop.phone,
+      });
+      toast.success(`Pickup Counter Sticker downloaded for ${shop.shopName}`);
+    } catch (e) {
+      toast.error((e as Error).message ?? 'Failed to generate sticker');
+    } finally {
+      setDownloadingStickerId(null);
+    }
+  };
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.get<{ success: boolean; shops: ApiShopFull[] }>('/shops?limit=200');
+      setShops(data.shops);
+    } catch {
+      toast.error('Failed to load shops');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // Wait for auth to finish restoring the session before fetching — avoids
+  // a 401 when the component mounts before the access token is loaded.
+  useEffect(() => {
+    if (authLoading) return;
+    load();
+  }, [authLoading, load]);
+
+  const filteredShops = useMemo(() => shops.filter(s => {
+    if (statusFilter !== 'all' && s.status !== statusFilter) return false;
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      return s.shopName.toLowerCase().includes(q) || s.ownerName.toLowerCase().includes(q) || s.phone.includes(q);
+    }
+    return true;
+  }), [shops, statusFilter, search]);
+
+  const setF = <K extends keyof ShopForm>(k: K, v: ShopForm[K]) => setForm(f => ({ ...f, [k]: v }));
+
+  const openCreate = () => {
+    setEditingId(null);
+    setForm(emptyShopForm());
+    setShowForm(true);
+    setChangingOwnerId(null);
+  };
+
+  const openEdit = (s: ApiShopFull) => {
+    setEditingId(s._id);
+    setForm({
+      shopName: s.shopName,
+      ownerPhone: s.phone,
+      ownerName: s.ownerName,
+      addressLine1: s.address?.line1 ?? '',
+      addressCity: s.address?.city ?? '',
+      addressPincode: s.address?.pincode ?? '',
+      shopType: s.shopType,
+      description: s.description ?? '',
+      isOpen: s.isOpen,
+      image: s.image ?? '',
+    });
+    setShowForm(true);
+    setChangingOwnerId(null);
+  };
+
+  const handleLogoUpload = async (file: File) => {
+    setUploadingLogo(true);
+    try {
+      const fd = new FormData();
+      fd.append('image', file);
+      const { access } = api.getTokens();
+      const res = await fetch('/api/upload/product-image', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${access ?? ''}` },
+        body: fd,
+      });
+      const data = await res.json() as { success: boolean; imageUrl: string };
+      if (data.success) setF('image', data.imageUrl);
+      else toast.error('Upload failed');
+    } catch { toast.error('Upload failed'); }
+    finally { setUploadingLogo(false); }
+  };
+
+  const handleSave = async () => {
+    if (!form.shopName.trim()) { toast.error('Shop name is required'); return; }
+    if (!form.ownerPhone.trim()) { toast.error('Owner phone is required'); return; }
+    if (!form.ownerName.trim()) { toast.error('Owner name is required'); return; }
+    if (!form.addressLine1.trim() || !form.addressCity.trim() || !form.addressPincode.trim()) {
+      toast.error('Full address (line, city, pincode) is required'); return;
+    }
+    setSaving(true);
+    try {
+      if (editingId) {
+        await api.patch(`/shops/${editingId}`, {
+          shopName: form.shopName,
+          ownerName: form.ownerName,
+          phone: form.ownerPhone,
+          shopType: form.shopType,
+          category: form.shopType,
+          description: form.description,
+          isOpen: form.isOpen,
+          image: form.image || undefined,
+          address: { line1: form.addressLine1, city: form.addressCity, pincode: form.addressPincode },
+        });
+        toast.success('Shop updated');
+      } else {
+        await api.post('/shops/admin-create', {
+          shopName: form.shopName,
+          ownerName: form.ownerName,
+          phone: form.ownerPhone,
+          shopType: form.shopType,
+          category: form.shopType,
+          description: form.description,
+          image: form.image || undefined,
+          address: { line1: form.addressLine1, city: form.addressCity, pincode: form.addressPincode },
+        });
+        toast.success('Shop created and owner account set up');
+      }
+      setShowForm(false);
+      load();
+    } catch (e) {
+      toast.error((e as Error).message ?? 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleOpen = async (shop: ApiShopFull) => {
+    setTogglingId(shop._id);
+    try {
+      await api.patch(`/shops/${shop._id}/toggle-open`, {});
+      setShops(prev => prev.map(s => s._id === shop._id ? { ...s, isOpen: !s.isOpen } : s));
+      toast.success(shop.isOpen ? 'Shop closed' : 'Shop opened');
+    } catch (e) {
+      toast.error((e as Error).message ?? 'Failed to toggle');
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await api.delete(`/shops/${id}`);
+      setShops(prev => prev.filter(s => s._id !== id));
+      setDeleteConfirm(null);
+      toast.success('Shop deleted');
+    } catch {
+      toast.error('Failed to delete shop');
+    }
+  };
+
+  const handleChangeOwner = async (shopId: string) => {
+    if (!ownerPhone.trim()) { toast.error('Phone is required'); return; }
+    setOwnerSaving(true);
+    try {
+      await api.patch(`/shops/${shopId}/owner`, {
+        phone: ownerPhone.trim(),
+        ownerName: ownerNameInput.trim() || undefined,
+      });
+      toast.success('Owner changed successfully');
+      setChangingOwnerId(null);
+      setOwnerPhone('');
+      setOwnerNameInput('');
+      load();
+    } catch (e) {
+      toast.error((e as Error).message ?? 'Failed to change owner');
+    } finally {
+      setOwnerSaving(false);
+    }
+  };
+
+  const handleLinkOwner = async (shopId: string) => {
+    if (!linkPhone.trim() && !linkEmail.trim()) { toast.error('Enter phone or email to link'); return; }
+    setLinkSaving(true);
+    try {
+      await api.patch(`/shops/${shopId}/link-owner`, {
+        phone: linkPhone.trim() || undefined,
+        email: linkEmail.trim() || undefined,
+      });
+      toast.success('Owner account linked — vendor can now upload products');
+      setLinkingOwnerId(null);
+      setLinkPhone('');
+      setLinkEmail('');
+      load();
+    } catch (e) {
+      toast.error((e as Error).message ?? 'Failed to link owner');
+    } finally {
+      setLinkSaving(false);
+    }
+  };
+
+  const statusColors: Record<string, string> = {
+    approved: 'bg-emerald-500/10 text-emerald-600',
+    pending: 'bg-amber-500/10 text-amber-600',
+    rejected: 'bg-red-500/10 text-red-600',
+    banned: 'bg-slate-500/10 text-slate-500',
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-foreground">Shop Management</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">Create, edit and manage all shops on the platform</p>
+        </div>
+        <Button
+          onClick={openCreate}
+          className="rounded-xl shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90 flex items-center gap-2"
+        >
+          <Plus className="w-4 h-4" /> New Shop
+        </Button>
+      </div>
+
+      <div className="flex flex-wrap gap-3">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Search by name, owner or phone…"
+            className="pl-9 bg-background neu-inset border-none"
+          />
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          {(['all', 'approved', 'pending', 'rejected', 'banned'] as const).map(s => (
+            <button
+              key={s}
+              onClick={() => setStatusFilter(s)}
+              className={`px-3 py-1.5 rounded-xl text-sm font-medium transition-all ${
+                statusFilter === s
+                  ? 'bg-primary text-primary-foreground neu-card'
+                  : 'bg-background neu-inset text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              {s === 'all' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {showForm && (
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            className="bg-card rounded-3xl neu-card p-6 space-y-5"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-lg">{editingId ? 'Edit Shop' : 'Create New Shop'}</h3>
+              <button onClick={() => setShowForm(false)} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div>
+              <label className="text-sm font-semibold block mb-2">Shop Logo</label>
+              {form.image ? (
+                <div className="relative w-24 h-24 rounded-2xl overflow-hidden border border-border/50">
+                  <img src={form.image} alt="Logo" className="w-full h-full object-cover" />
+                  <button
+                    className="absolute top-1 right-1 bg-black/60 hover:bg-black/80 text-white rounded-full p-1 transition-colors"
+                    onClick={() => setF('image', '')}
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              ) : (
+                <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-border rounded-2xl p-5 cursor-pointer hover:border-primary/60 transition-colors text-center w-24 h-24">
+                  {uploadingLogo ? (
+                    <RefreshCw className="w-5 h-5 text-primary animate-spin" />
+                  ) : (
+                    <>
+                      <ImageIcon className="w-6 h-6 text-muted-foreground/50" />
+                      <span className="text-[10px] text-muted-foreground leading-tight">Upload logo</span>
+                    </>
+                  )}
+                  <input
+                    type="file"
+                    className="hidden"
+                    accept="image/jpeg,image/png,image/webp"
+                    onChange={e => e.target.files?.[0] && handleLogoUpload(e.target.files[0])}
+                    disabled={uploadingLogo}
+                  />
+                </label>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm font-medium block mb-1">Shop Name <span className="text-destructive">*</span></label>
+                <Input value={form.shopName} onChange={e => setF('shopName', e.target.value)} placeholder="e.g. Fresh Mart" className="bg-background neu-inset border-none" />
+              </div>
+              <div>
+                <label className="text-sm font-medium block mb-1">Category / Type <span className="text-destructive">*</span></label>
+                <select
+                  value={form.shopType}
+                  onChange={e => setF('shopType', e.target.value)}
+                  className="w-full h-10 px-3 rounded-xl bg-background neu-inset border-none text-sm text-foreground appearance-none cursor-pointer"
+                >
+                  {categories.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-medium block mb-1">Owner Phone <span className="text-destructive">*</span></label>
+                <Input
+                  value={form.ownerPhone}
+                  onChange={e => setF('ownerPhone', e.target.value)}
+                  placeholder="10-digit mobile number"
+                  className="bg-background neu-inset border-none"
+                  disabled={!!editingId}
+                />
+                {editingId && <p className="text-xs text-muted-foreground mt-1">Use "Change Owner" in the list to reassign ownership.</p>}
+              </div>
+              <div>
+                <label className="text-sm font-medium block mb-1">Owner Name <span className="text-destructive">*</span></label>
+                <Input value={form.ownerName} onChange={e => setF('ownerName', e.target.value)} placeholder="Owner full name" className="bg-background neu-inset border-none" />
+              </div>
+              <div>
+                <label className="text-sm font-medium block mb-1">Address Line 1 <span className="text-destructive">*</span></label>
+                <Input value={form.addressLine1} onChange={e => setF('addressLine1', e.target.value)} placeholder="Street / Area / Locality" className="bg-background neu-inset border-none" />
+              </div>
+              <div>
+                <label className="text-sm font-medium block mb-1">City <span className="text-destructive">*</span></label>
+                <Input value={form.addressCity} onChange={e => setF('addressCity', e.target.value)} placeholder="City" className="bg-background neu-inset border-none" />
+              </div>
+              <div>
+                <label className="text-sm font-medium block mb-1">Pincode <span className="text-destructive">*</span></label>
+                <Input value={form.addressPincode} onChange={e => setF('addressPincode', e.target.value)} placeholder="e.g. 733101" className="bg-background neu-inset border-none" />
+              </div>
+              <div>
+                <label className="text-sm font-medium block mb-1">Description</label>
+                <Input value={form.description} onChange={e => setF('description', e.target.value)} placeholder="Short shop description" className="bg-background neu-inset border-none" />
+              </div>
+              <div className="flex items-center gap-3 self-end pb-1">
+                <button
+                  type="button"
+                  onClick={() => setF('isOpen', !form.isOpen)}
+                  className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${form.isOpen ? 'bg-primary' : 'bg-muted'}`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${form.isOpen ? 'translate-x-5' : 'translate-x-0'}`} />
+                </button>
+                <span className="text-sm text-muted-foreground">{form.isOpen ? 'Open for orders' : 'Closed'}</span>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-1">
+              <Button variant="outline" onClick={() => setShowForm(false)} className="rounded-xl">Cancel</Button>
+              <Button
+                onClick={handleSave}
+                disabled={saving || uploadingLogo}
+                className="rounded-xl shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90"
+              >
+                {saving ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Saving…</> : editingId ? 'Update Shop' : 'Create Shop'}
+              </Button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {loading ? (
+        <div className="space-y-3">{[1, 2, 3].map(i => <div key={i} className="h-20 bg-muted rounded-2xl animate-pulse" />)}</div>
+      ) : filteredShops.length === 0 ? (
+        <div className="bg-card rounded-3xl neu-card p-16 text-center">
+          <Store className="w-12 h-12 mx-auto mb-3 text-muted-foreground opacity-25" />
+          <p className="font-semibold text-muted-foreground">No shops found</p>
+          <p className="text-sm text-muted-foreground mt-1">
+            {search || statusFilter !== 'all' ? 'Try clearing your filters.' : 'Click "New Shop" to create the first shop.'}
+          </p>
+        </div>
+      ) : (
+        <div className="bg-card rounded-3xl neu-card overflow-hidden">
+          <div className="p-5 border-b border-border flex items-center justify-between">
+            <h3 className="font-bold text-foreground">All Shops ({filteredShops.length})</h3>
+            <button onClick={load} className="p-2 hover:bg-muted rounded-xl text-muted-foreground transition-colors" title="Refresh">
+              <RefreshCw className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="divide-y divide-border/50">
+            {filteredShops.map(shop => {
+              const isDeleting = deleteConfirm === shop._id;
+              const isChangingOwner = changingOwnerId === shop._id;
+              const isLinkingOwner = linkingOwnerId === shop._id;
+              const isToggling = togglingId === shop._id;
+              return (
+                <div key={shop._id}>
+                  <div className="p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+                    <div className="flex items-center gap-3 flex-1 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-muted flex items-center justify-center shrink-0 overflow-hidden border border-border/50">
+                        {shop.image
+                          ? <img src={shop.image} alt={shop.shopName} className="w-full h-full object-cover" />
+                          : <Store className="w-5 h-5 text-muted-foreground" />}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-sm text-foreground truncate">{shop.shopName}</p>
+                        <p className="text-xs text-muted-foreground truncate">{shop.ownerName} · {shop.phone}</p>
+                        <p className="text-xs text-muted-foreground truncate">
+                          {[shop.address?.city, shop.address?.pincode].filter(Boolean).join(' · ')}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2 flex-wrap shrink-0">
+                      <Badge className={`text-[10px] border-none px-2 py-0 capitalize ${statusColors[shop.status] ?? 'bg-muted text-muted-foreground'}`}>
+                        {shop.status}
+                      </Badge>
+                      <Badge className={`text-[10px] border-none px-2 py-0 ${shop.isOpen ? 'bg-green-500/10 text-green-600' : 'bg-slate-500/10 text-slate-500'}`}>
+                        {shop.isOpen ? 'Open' : 'Closed'}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground hidden sm:inline">{shop.totalOrders ?? 0} orders</span>
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      {shop.status === 'approved' && (
+                        <button
+                          onClick={() => handleToggleOpen(shop)}
+                          disabled={isToggling}
+                          title={shop.isOpen ? 'Close shop' : 'Open shop'}
+                          className={`p-2 rounded-xl transition-colors ${shop.isOpen ? 'hover:bg-red-50 dark:hover:bg-red-950/30 text-red-500' : 'hover:bg-green-50 dark:hover:bg-green-950/30 text-green-600'}`}
+                        >
+                          {isToggling ? <RefreshCw className="w-4 h-4 animate-spin" /> : shop.isOpen ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </button>
+                      )}
+                      <button onClick={() => onManageProducts(shop)} title="Manage products" className="p-2 rounded-xl hover:bg-muted text-muted-foreground transition-colors">
+                        <Package className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => { setChangingOwnerId(isChangingOwner ? null : shop._id); setOwnerPhone(''); setOwnerNameInput(''); setLinkingOwnerId(null); }}
+                        title="Change owner"
+                        className={`p-2 rounded-xl hover:bg-muted transition-colors ${isChangingOwner ? 'text-primary bg-primary/10' : 'text-muted-foreground'}`}
+                      >
+                        <User className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => { setLinkingOwnerId(isLinkingOwner ? null : shop._id); setLinkPhone(''); setLinkEmail(''); setChangingOwnerId(null); }}
+                        title="Fix vendor login (link Google account)"
+                        className={`p-2 rounded-xl hover:bg-muted transition-colors ${isLinkingOwner ? 'text-emerald-600 bg-emerald-500/10' : 'text-muted-foreground'}`}
+                      >
+                        <UserCheck className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => handleDownloadSticker(shop)}
+                        disabled={downloadingStickerId === shop._id}
+                        title="Download shop sticker (QR)"
+                        className="p-2 rounded-xl hover:bg-amber-50 dark:hover:bg-amber-950/30 text-amber-600 transition-colors disabled:opacity-50"
+                      >
+                        {downloadingStickerId === shop._id
+                          ? <RefreshCw className="w-4 h-4 animate-spin" />
+                          : <QrCode className="w-4 h-4" />}
+                      </button>
+                      <button onClick={() => openEdit(shop)} title="Edit" className="p-2 rounded-xl hover:bg-muted text-muted-foreground transition-colors">
+                        <Edit2 className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => setDeleteConfirm(shop._id)} title="Delete" className="p-2 rounded-xl hover:bg-destructive/10 text-destructive transition-colors">
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {isChangingOwner && (
+                    <div className="px-4 pb-4 bg-muted/30 border-t border-border/50">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide pt-3 mb-2">Assign New Owner</p>
+                      <div className="flex flex-wrap gap-2 items-end">
+                        <div className="flex-1 min-w-[160px]">
+                          <label className="text-xs font-medium block mb-1">New Owner Phone <span className="text-destructive">*</span></label>
+                          <Input value={ownerPhone} onChange={e => setOwnerPhone(e.target.value)} placeholder="10-digit phone" className="bg-background neu-inset border-none h-9 text-sm" />
+                        </div>
+                        <div className="flex-1 min-w-[160px]">
+                          <label className="text-xs font-medium block mb-1">Name <span className="text-muted-foreground font-normal">(optional)</span></label>
+                          <Input value={ownerNameInput} onChange={e => setOwnerNameInput(e.target.value)} placeholder="Auto-filled if account exists" className="bg-background neu-inset border-none h-9 text-sm" />
+                        </div>
+                        <Button size="sm" onClick={() => handleChangeOwner(shop._id)} disabled={ownerSaving} className="rounded-xl h-9 shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90">
+                          {ownerSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : 'Assign'}
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => setChangingOwnerId(null)} className="rounded-xl h-9">Cancel</Button>
+                      </div>
+                      <p className="text-xs text-muted-foreground mt-2">A new vendor account will be created automatically if the phone doesn't exist.</p>
+                    </div>
+                  )}
+
+                  {isLinkingOwner && (
+                    <div className="px-4 pb-4 bg-emerald-500/5 border-t border-emerald-500/20">
+                      <p className="text-xs font-semibold text-emerald-700 dark:text-emerald-400 uppercase tracking-wide pt-3 mb-1">Fix Vendor Login</p>
+                      <p className="text-xs text-muted-foreground mb-3">
+                        Use this when a vendor gets "Forbidden" uploading products — usually because their Google account is separate from their vendor account.
+                        Enter the vendor's real phone and/or Google email to merge the accounts.
+                      </p>
+                      <div className="flex flex-wrap gap-2 items-end">
+                        <div className="flex-1 min-w-[160px]">
+                          <label className="text-xs font-medium block mb-1">Vendor Phone</label>
+                          <Input value={linkPhone} onChange={e => setLinkPhone(e.target.value)} placeholder="e.g. 7431813135" className="bg-background neu-inset border-none h-9 text-sm" />
+                        </div>
+                        <div className="flex-1 min-w-[200px]">
+                          <label className="text-xs font-medium block mb-1">Google Email</label>
+                          <Input value={linkEmail} onChange={e => setLinkEmail(e.target.value)} placeholder="e.g. vendor@gmail.com" className="bg-background neu-inset border-none h-9 text-sm" type="email" />
+                        </div>
+                        <Button size="sm" onClick={() => handleLinkOwner(shop._id)} disabled={linkSaving} className="rounded-xl h-9 shadow-none neu-card bg-emerald-600 text-white hover:bg-emerald-700">
+                          {linkSaving ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <><UserCheck className="w-3.5 h-3.5 mr-1" />Fix Account</>}
+                        </Button>
+                        <Button size="sm" variant="outline" onClick={() => setLinkingOwnerId(null)} className="rounded-xl h-9">Cancel</Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {isDeleting && (
+                    <div className="px-4 py-3 bg-destructive/5 border-t border-destructive/20 flex items-center justify-between gap-3">
+                      <span className="text-sm text-destructive font-medium">Delete <span className="font-bold">{shop.shopName}</span>? All products will also be removed.</span>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="outline" onClick={() => setDeleteConfirm(null)} className="rounded-lg h-8">Cancel</Button>
+                        <Button size="sm" onClick={() => handleDelete(shop._id)} className="rounded-lg h-8 bg-destructive text-white hover:bg-destructive/90 shadow-none">Delete</Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+type CommForm = { type: 'percentage' | 'fixed'; rate: string; isActive: boolean };
+const emptyCommForm = (): CommForm => ({ type: 'percentage', rate: '', isActive: true });
+
+function ShopProductsPanel({ shop, onBack }: { shop: ApiShopFull; onBack: () => void }) {
+  const [products, setProducts] = useState<ApiProductFull[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState<ProductForm>(emptyProductForm());
+  const [saving, setSaving] = useState(false);
+  const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [editingStockId, setEditingStockId] = useState<string | null>(null);
+  const [stockInput, setStockInput] = useState('');
+
+  // Pagination & Search
+  const [page, setPage] = useState(1);
+  const [limit] = useState(40);
+  const [search, setSearch] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('');
+  const [totalProducts, setTotalProducts] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+
+  // Per-product commission state
+  const [productRules, setProductRules] = useState<Record<string, CommissionRuleRecord | undefined>>({});
+  const [commEditId, setCommEditId] = useState<string | null>(null);
+  const [commForm, setCommForm] = useState<CommForm>(emptyCommForm());
+  const [commSaving, setCommSaving] = useState<string | null>(null);
+
+  const loadCommissions = useCallback(async (productIds: string[]) => {
+    if (productIds.length === 0) return;
+    try {
+      const data = await api.get<{ success: boolean; rules: CommissionRuleRecord[] }>('/commissions?level=product');
+      const map: Record<string, CommissionRuleRecord | undefined> = {};
+      for (const r of data.rules ?? []) {
+        if (r.targetId && productIds.includes(r.targetId)) {
+          map[r.targetId] = r;
+        }
+      }
+      setProductRules(map);
+    } catch { /* non-fatal */ }
+  }, []);
+
+  const loadProducts = useCallback(async (targetPage = page, searchStr = search, catStr = categoryFilter) => {
+    setLoading(true);
+    try {
+      const sq = searchStr.trim() ? `&search=${encodeURIComponent(searchStr.trim())}` : '';
+      const cq = catStr.trim() ? `&category=${encodeURIComponent(catStr.trim())}` : '';
+      const data = await api.get<{ success: boolean; products: ApiProductFull[]; total?: number; pages?: number; page?: number }>(
+        `/products?shopId=${shop._id}&status=all&page=${targetPage}&limit=${limit}${sq}${cq}`
+      );
+      setProducts(data.products || []);
+      setTotalProducts(data.total ?? data.products?.length ?? 0);
+      setTotalPages(Math.max(1, data.pages ?? Math.ceil((data.total ?? 0) / limit)));
+      setPage(targetPage);
+      await loadCommissions((data.products || []).map(p => p._id));
+    } catch {
+      toast.error('Failed to load products');
+    } finally {
+      setLoading(false);
+    }
+  }, [shop._id, page, limit, search, categoryFilter, loadCommissions]);
+
+  const openCommEdit = (p: ApiProductFull) => {
+    const rule = productRules[p._id];
+    setCommForm(rule
+      ? { type: rule.type, rate: String(rule.rate), isActive: rule.isActive }
+      : emptyCommForm()
+    );
+    setCommEditId(p._id);
+  };
+
+  const handleSaveCommission = async (p: ApiProductFull) => {
+    const rate = Number(commForm.rate);
+    if (isNaN(rate) || rate < 0) { toast.error('Enter a valid commission rate'); return; }
+    setCommSaving(p._id);
+    try {
+      const existingRule = productRules[p._id];
+      if (existingRule) {
+        await api.patch(`/commissions/${existingRule._id}`, { type: commForm.type, rate, isActive: commForm.isActive });
+        toast.success('Commission updated');
+      } else {
+        await api.post('/commissions', {
+          level: 'product',
+          type: commForm.type,
+          rate,
+          isActive: commForm.isActive,
+          targetId: p._id,
+          targetName: p.name,
+        });
+        toast.success('Product commission set');
+      }
+      setCommEditId(null);
+      await loadCommissions(products.map(q => q._id));
+    } catch (e) {
+      toast.error((e as Error).message ?? 'Save failed');
+    } finally {
+      setCommSaving(null);
+    }
+  };
+
+  const handleRemoveCommission = async (p: ApiProductFull) => {
+    const rule = productRules[p._id];
+    if (!rule) return;
+    setCommSaving(p._id);
+    try {
+      await api.delete(`/commissions/${rule._id}`);
+      toast.success('Product commission removed');
+      setCommEditId(null);
+      setProductRules(prev => { const n = { ...prev }; delete n[p._id]; return n; });
+    } catch {
+      toast.error('Remove failed');
+    } finally {
+      setCommSaving(null);
+    }
+  };
+
+  useEffect(() => { loadProducts(); }, [loadProducts]);
+
+  const setF = <K extends keyof ProductForm>(k: K, v: ProductForm[K]) => setForm(f => ({ ...f, [k]: v }));
+
+  const openCreate = () => { setEditingId(null); setForm(emptyProductForm()); setShowForm(true); };
+
+  const openEdit = (p: ApiProductFull) => {
+    setEditingId(p._id);
+    setForm({
+      name: p.name,
+      description: p.description ?? '',
+      price: String(p.price),
+      discountedPrice: p.discountedPrice != null ? String(p.discountedPrice) : '',
+      category: p.category,
+      subcategory: (p as ApiProductFull & { subcategory?: string }).subcategory ?? '',
+      stock: String(p.stock),
+      unit: p.unit ?? 'piece',
+      status: p.status === 'inactive' ? 'inactive' : 'active',
+      images: p.images ?? [],
+    });
+    setShowForm(true);
+  };
+
+  const MAX_IMAGES = 5;
+
+  const handleImageUpload = async (file: File) => {
+    if (form.images.length >= MAX_IMAGES) {
+      toast.error(`Maximum ${MAX_IMAGES} images allowed`);
+      return;
+    }
+    setUploadingImage(true);
+    try {
+      const fd = new FormData();
+      fd.append('image', file);
+      const { access } = api.getTokens();
+      const res = await fetch('/api/upload/product-image', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${access ?? ''}` },
+        body: fd,
+      });
+      const data = await res.json() as { success: boolean; imageUrl: string };
+      if (data.success) setF('images', [...form.images, data.imageUrl]);
+      else toast.error('Upload failed');
+    } catch { toast.error('Upload failed'); }
+    finally { setUploadingImage(false); }
+  };
+
+  const handleRemoveImage = (idx: number) => {
+    setF('images', form.images.filter((_, i) => i !== idx));
+  };
+
+  const handleSave = async () => {
+    if (!form.name.trim()) { toast.error('Product name is required'); return; }
+    if (!form.price || Number(form.price) <= 0) { toast.error('Price must be a positive number'); return; }
+    setSaving(true);
+    const payload: Record<string, unknown> = {
+      name: form.name.trim(),
+      description: form.description.trim() || undefined,
+      price: Number(form.price),
+      discountedPrice: form.discountedPrice ? Number(form.discountedPrice) : undefined,
+      category: form.category,
+      subcategory: form.subcategory || undefined,
+      stock: Number(form.stock) || 0,
+      unit: form.unit.trim() || 'piece',
+      status: form.status,
+      images: form.images,
+      shopId: shop._id,
+    };
+    try {
+      if (editingId) {
+        await api.patch(`/products/${editingId}`, payload);
+        toast.success('Product updated');
+      } else {
+        await api.post('/products', payload);
+        toast.success('Product added');
+      }
+      setShowForm(false);
+      loadProducts();
+    } catch (e) {
+      toast.error((e as Error).message ?? 'Save failed');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    try {
+      await api.delete(`/products/${id}`);
+      setProducts(prev => prev.filter(p => p._id !== id));
+      setDeleteConfirm(null);
+      toast.success('Product deleted');
+    } catch {
+      toast.error('Failed to delete product');
+    }
+  };
+
+  const handleUpdateStock = async (productId: string) => {
+    const stock = parseInt(stockInput);
+    if (isNaN(stock) || stock < 0) { toast.error('Invalid stock value'); return; }
+    try {
+      await api.patch(`/products/${productId}`, { stock });
+      setProducts(prev => prev.map(p => p._id === productId ? { ...p, stock } : p));
+      setEditingStockId(null);
+      toast.success('Stock updated');
+    } catch {
+      toast.error('Failed to update stock');
+    }
+  };
+
+  const statusBadgeClass = (s: string) => {
+    if (s === 'active') return 'bg-emerald-500/10 text-emerald-600';
+    if (s === 'out_of_stock') return 'bg-amber-500/10 text-amber-600';
+    return 'bg-slate-500/10 text-slate-500';
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <button onClick={onBack} className="p-2 rounded-xl hover:bg-muted text-muted-foreground transition-colors" title="Back to shops">
+            <ChevronDown className="w-5 h-5 rotate-90" />
+          </button>
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-bold text-foreground">{shop.shopName}</h2>
+              <Badge className={`text-[10px] border-none px-2 ${shop.isOpen ? 'bg-green-500/10 text-green-600' : 'bg-slate-500/10 text-slate-500'}`}>
+                {shop.isOpen ? 'Open' : 'Closed'}
+              </Badge>
+            </div>
+            <p className="text-sm text-muted-foreground mt-0.5">Product Management · {shop.ownerName}</p>
+          </div>
+        </div>
+        <Button onClick={openCreate} className="rounded-xl shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90 flex items-center gap-2">
+          <Plus className="w-4 h-4" /> Add Product
+        </Button>
+      </div>
+
+      <AnimatePresence>
+        {showForm && (
+          <motion.div
+            initial={{ opacity: 0, y: -12 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -12 }}
+            className="bg-card rounded-3xl neu-card p-6 space-y-5"
+          >
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-lg">{editingId ? 'Edit Product' : 'Add Product'}</h3>
+              <button onClick={() => setShowForm(false)} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground"><X className="w-5 h-5" /></button>
+            </div>
+
+            <div>
+              <label className="text-sm font-semibold block mb-1">Product Photos</label>
+              <p className="text-xs text-muted-foreground mb-3">Upload up to {MAX_IMAGES} photos · First photo is the main image</p>
+              <div className="flex flex-wrap gap-3">
+                {form.images.map((url, idx) => (
+                  <div key={idx} className="relative w-24 h-24 rounded-2xl overflow-hidden border border-border/50 flex-shrink-0">
+                    <img src={url} alt={`Photo ${idx + 1}`} className="w-full h-full object-cover" />
+                    {idx === 0 && (
+                      <span className="absolute bottom-0 left-0 right-0 text-[10px] font-bold text-center bg-primary/80 text-primary-foreground py-0.5">Main</span>
+                    )}
+                    <button
+                      className="absolute top-1 right-1 bg-black/60 hover:bg-black/80 text-white rounded-full p-1 transition-colors"
+                      onClick={() => handleRemoveImage(idx)}
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                ))}
+                {form.images.length < MAX_IMAGES && (
+                  <label className="flex flex-col items-center justify-center gap-1.5 border-2 border-dashed border-border rounded-2xl cursor-pointer hover:border-primary/60 transition-colors text-center w-24 h-24 flex-shrink-0">
+                    {uploadingImage
+                      ? <RefreshCw className="w-5 h-5 text-primary animate-spin" />
+                      : <>
+                          <ImageIcon className="w-6 h-6 text-muted-foreground/50" />
+                          <span className="text-[11px] text-muted-foreground leading-tight">
+                            {form.images.length === 0 ? 'Add photo' : `Add more\n(${form.images.length}/${MAX_IMAGES})`}
+                          </span>
+                        </>
+                    }
+                    <input type="file" className="hidden" accept="image/jpeg,image/png,image/webp" onChange={e => e.target.files?.[0] && handleImageUpload(e.target.files[0])} disabled={uploadingImage} />
+                  </label>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm font-medium block mb-1">Product Name <span className="text-destructive">*</span></label>
+                <Input value={form.name} onChange={e => setF('name', e.target.value)} placeholder="e.g. Basmati Rice 1kg" className="bg-background neu-inset border-none" />
+              </div>
+              <div>
+                <label className="text-sm font-medium block mb-1">Category <span className="text-destructive">*</span></label>
+                <select value={form.category} onChange={e => { setF('category', e.target.value); setF('subcategory', ''); }} className="w-full h-10 px-3 rounded-xl bg-background neu-inset border-none text-sm text-foreground appearance-none cursor-pointer">
+                  {categories.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+                </select>
+              </div>
+              {(form.category === 'grocery' || form.category === 'groceries') && (
+                <div>
+                  <label className="text-sm font-medium block mb-1">Grocery Subcategory</label>
+                  <select value={form.subcategory} onChange={e => setF('subcategory', e.target.value)} className="w-full h-10 px-3 rounded-xl bg-background neu-inset border-none text-sm text-foreground appearance-none cursor-pointer">
+                    <option value="">Select subcategory…</option>
+                    {GROCERY_SUBCAT_OPTIONS_ADMIN.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  </select>
+                </div>
+              )}
+              <div>
+                <label className="text-sm font-medium block mb-1">Price (₹) <span className="text-destructive">*</span></label>
+                <Input type="number" min={0} value={form.price} onChange={e => setF('price', e.target.value)} placeholder="0" className="bg-background neu-inset border-none" />
+              </div>
+              <div>
+                <label className="text-sm font-medium block mb-1">Discounted Price (₹) <span className="text-muted-foreground font-normal text-xs">optional</span></label>
+                <Input type="number" min={0} value={form.discountedPrice} onChange={e => setF('discountedPrice', e.target.value)} placeholder="Leave blank for no discount" className="bg-background neu-inset border-none" />
+              </div>
+              <div>
+                <label className="text-sm font-medium block mb-1">Stock</label>
+                <Input type="number" min={0} value={form.stock} onChange={e => setF('stock', e.target.value)} placeholder="0" className="bg-background neu-inset border-none" />
+              </div>
+              <div>
+                <label className="text-sm font-medium block mb-1">Unit</label>
+                <Input value={form.unit} onChange={e => setF('unit', e.target.value)} placeholder="kg / piece / litre / pack" className="bg-background neu-inset border-none" />
+              </div>
+              <div className="md:col-span-2">
+                <label className="text-sm font-medium block mb-1">Description</label>
+                <Input value={form.description} onChange={e => setF('description', e.target.value)} placeholder="Brief product description" className="bg-background neu-inset border-none" />
+              </div>
+              <div className="flex items-center gap-3 self-end pb-1">
+                <button
+                  type="button"
+                  onClick={() => setF('status', form.status === 'active' ? 'inactive' : 'active')}
+                  className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${form.status === 'active' ? 'bg-primary' : 'bg-muted'}`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${form.status === 'active' ? 'translate-x-5' : 'translate-x-0'}`} />
+                </button>
+                <span className="text-sm text-muted-foreground">{form.status === 'active' ? 'Active — visible to customers' : 'Inactive — hidden'}</span>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-3 pt-1">
+              <Button variant="outline" onClick={() => setShowForm(false)} className="rounded-xl">Cancel</Button>
+              <Button onClick={handleSave} disabled={saving || uploadingImage} className="rounded-xl shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90">
+                {saving ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Saving…</> : editingId ? 'Update Product' : 'Add Product'}
+              </Button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {loading ? (
+        <div className="space-y-3">{[1, 2, 3, 4].map(i => <div key={i} className="h-16 bg-muted rounded-2xl animate-pulse" />)}</div>
+      ) : products.length === 0 ? (
+        <div className="bg-card rounded-3xl neu-card p-16 text-center">
+          <Package className="w-12 h-12 mx-auto mb-3 text-muted-foreground opacity-25" />
+          <p className="font-semibold text-muted-foreground">No products yet</p>
+          <p className="text-sm text-muted-foreground mt-1">Click "Add Product" to list the first product for this shop.</p>
+        </div>
+      ) : (
+        <div className="bg-card rounded-3xl neu-card overflow-hidden">
+          <div className="p-5 border-b border-border flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div>
+              <h3 className="font-bold text-foreground">Products ({totalProducts || products.length})</h3>
+              <p className="text-xs text-muted-foreground mt-0.5">
+                Page {page} of {totalPages} · Showing {totalProducts > 0 ? (page - 1) * limit + 1 : 0}–{Math.min(page * limit, totalProducts)} of {totalProducts}
+              </p>
+            </div>
+            
+            <div className="flex items-center gap-2 flex-wrap">
+              <div className="relative min-w-[200px] flex-1 md:flex-initial">
+                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  value={search}
+                  onChange={e => {
+                    const val = e.target.value;
+                    setSearch(val);
+                    loadProducts(1, val, categoryFilter);
+                  }}
+                  placeholder="Search products..."
+                  className="pl-9 h-9 text-xs bg-background neu-inset border-none rounded-xl"
+                />
+                {search && (
+                  <button
+                    onClick={() => {
+                      setSearch('');
+                      loadProducts(1, '', categoryFilter);
+                    }}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+
+              <select
+                value={categoryFilter}
+                onChange={e => {
+                  const val = e.target.value;
+                  setCategoryFilter(val);
+                  loadProducts(1, search, val);
+                }}
+                className="h-9 px-3 rounded-xl bg-background neu-inset border-none text-xs text-foreground appearance-none cursor-pointer"
+              >
+                <option value="">All Categories</option>
+                {categories.map(c => <option key={c.id} value={c.id}>{c.emoji} {c.name}</option>)}
+              </select>
+
+              <button onClick={() => loadProducts(page, search, categoryFilter)} className="p-2 hover:bg-muted rounded-xl text-muted-foreground transition-colors" title="Refresh">
+                <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+              </button>
+            </div>
+          </div>
+          <div className="divide-y divide-border/50">
+            {products.map(p => {
+              const isDeleting = deleteConfirm === p._id;
+              const isEditingStock = editingStockId === p._id;
+              const cat = categories.find((c: { id: string }) => c.id === p.category);
+              return (
+                <div key={p._id}>
+                  <div className="p-4 flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-xl overflow-hidden bg-muted shrink-0 border border-border/50 flex items-center justify-center">
+                      {p.images?.[0] ? <img src={p.images[0]} alt={p.name} className="w-full h-full object-cover" /> : <Package className="w-5 h-5 text-muted-foreground/40" />}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="font-semibold text-sm text-foreground truncate">{p.name}</p>
+                      <p className="text-xs text-muted-foreground">{(cat as { emoji?: string })?.emoji ?? ''} {(cat as { name?: string })?.name ?? p.category} · {p.unit ?? 'piece'}</p>
+                      <div className="flex items-center gap-2 mt-0.5">
+                        <span className="text-xs font-semibold text-foreground">
+                          {p.discountedPrice ? (
+                            <>{formatINR(p.discountedPrice)} <span className="text-muted-foreground line-through font-normal">{formatINR(p.price)}</span></>
+                          ) : formatINR(p.price)}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="shrink-0 hidden sm:block">
+                      {isEditingStock ? (
+                        <div className="flex items-center gap-1">
+                          <Input
+                            type="number" min={0} value={stockInput}
+                            onChange={e => setStockInput(e.target.value)}
+                            onKeyDown={e => { if (e.key === 'Enter') handleUpdateStock(p._id); if (e.key === 'Escape') setEditingStockId(null); }}
+                            className="w-20 h-8 text-sm bg-background neu-inset border-none text-center"
+                            autoFocus
+                          />
+                          <button onClick={() => handleUpdateStock(p._id)} className="p-1.5 rounded-lg bg-primary text-primary-foreground">
+                            <CheckCircle className="w-3.5 h-3.5" />
+                          </button>
+                          <button onClick={() => setEditingStockId(null)} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => { setEditingStockId(p._id); setStockInput(String(p.stock)); }}
+                          className="text-sm font-semibold hover:text-primary transition-colors text-right"
+                          title="Click to edit stock"
+                        >
+                          {p.stock}<span className="text-xs font-normal text-muted-foreground ml-1">in stock</span>
+                        </button>
+                      )}
+                    </div>
+                    <Badge className={`text-[10px] border-none px-2 py-0 shrink-0 hidden md:flex ${statusBadgeClass(p.status)}`}>
+                      {p.status.replace('_', ' ')}
+                    </Badge>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button onClick={() => openEdit(p)} title="Edit product" className="p-2 rounded-xl hover:bg-muted text-muted-foreground transition-colors"><Edit2 className="w-4 h-4" /></button>
+                      <button
+                        onClick={() => commEditId === p._id ? setCommEditId(null) : openCommEdit(p)}
+                        title="Set product commission"
+                        className={`p-2 rounded-xl transition-colors ${commEditId === p._id ? 'bg-primary/10 text-primary' : productRules[p._id] ? 'text-primary hover:bg-primary/10' : 'text-muted-foreground hover:bg-muted'}`}
+                      >
+                        <Award className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => setDeleteConfirm(p._id)} title="Delete" className="p-2 rounded-xl hover:bg-destructive/10 text-destructive transition-colors"><Trash2 className="w-4 h-4" /></button>
+                    </div>
+                  </div>
+
+                  {/* Inline commission editor */}
+                  {commEditId === p._id && (
+                    <div className="mx-4 mb-3 px-4 py-3 rounded-2xl bg-primary/5 border border-primary/15 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-semibold text-primary">Product Commission</p>
+                        {productRules[p._id] && (
+                          <button
+                            onClick={() => handleRemoveCommission(p)}
+                            disabled={commSaving === p._id}
+                            className="text-xs text-destructive hover:underline disabled:opacity-50"
+                          >
+                            Remove rule
+                          </button>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <select
+                          value={commForm.type}
+                          onChange={e => setCommForm(f => ({ ...f, type: e.target.value as 'percentage' | 'fixed' }))}
+                          className="h-8 px-2 rounded-lg bg-background neu-inset border-none text-sm text-foreground appearance-none cursor-pointer"
+                        >
+                          <option value="percentage">% Percentage</option>
+                          <option value="fixed">₹ Fixed</option>
+                        </select>
+                        <Input
+                          type="number"
+                          min={0}
+                          step={commForm.type === 'percentage' ? '0.1' : '1'}
+                          value={commForm.rate}
+                          onChange={e => setCommForm(f => ({ ...f, rate: e.target.value }))}
+                          placeholder={commForm.type === 'percentage' ? 'e.g. 12' : 'e.g. 50'}
+                          className="w-28 h-8 text-sm bg-background neu-inset border-none text-center"
+                        />
+                        <span className="text-xs text-muted-foreground">{commForm.type === 'percentage' ? '%' : '₹'}</span>
+                        <button
+                          type="button"
+                          onClick={() => setCommForm(f => ({ ...f, isActive: !f.isActive }))}
+                          className={`relative w-9 h-5 rounded-full transition-colors duration-200 shrink-0 ${commForm.isActive ? 'bg-primary' : 'bg-muted'}`}
+                          title={commForm.isActive ? 'Enabled' : 'Disabled'}
+                        >
+                          <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${commForm.isActive ? 'translate-x-4' : 'translate-x-0'}`} />
+                        </button>
+                        <span className="text-xs text-muted-foreground">{commForm.isActive ? 'Active' : 'Disabled'}</span>
+                        <div className="flex gap-1.5 ml-auto">
+                          <Button size="sm" variant="outline" onClick={() => setCommEditId(null)} className="rounded-lg h-8 text-xs">Cancel</Button>
+                          <Button
+                            size="sm"
+                            onClick={() => handleSaveCommission(p)}
+                            disabled={commSaving === p._id || !commForm.rate}
+                            className="rounded-lg h-8 text-xs shadow-none bg-primary text-primary-foreground hover:bg-primary/90"
+                          >
+                            {commSaving === p._id ? <RefreshCw className="w-3 h-3 animate-spin" /> : 'Save'}
+                          </Button>
+                        </div>
+                      </div>
+                      {productRules[p._id] && (
+                        <p className="text-[11px] text-muted-foreground">
+                          Current: {productRules[p._id]!.type === 'fixed'
+                            ? `₹${productRules[p._id]!.rate} fixed`
+                            : `${productRules[p._id]!.rate}% of item total`
+                          } · {productRules[p._id]!.isActive ? 'Active' : 'Disabled'}
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {isDeleting && (
+                    <div className="px-4 py-3 bg-destructive/5 border-t border-destructive/20 flex items-center justify-between gap-3">
+                      <span className="text-sm text-destructive font-medium">Delete <span className="font-bold">{p.name}</span>?</span>
+                      <div className="flex gap-2">
+                        <Button size="sm" variant="outline" onClick={() => setDeleteConfirm(null)} className="rounded-lg h-8">Cancel</Button>
+                        <Button size="sm" onClick={() => handleDelete(p._id)} className="rounded-lg h-8 bg-destructive text-white hover:bg-destructive/90 shadow-none">Delete</Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Pagination Footer */}
+          {totalPages > 1 && (
+            <div className="p-4 border-t border-border flex flex-col sm:flex-row items-center justify-between gap-3 bg-muted/20">
+              <div className="text-xs text-muted-foreground">
+                Page <span className="font-semibold text-foreground">{page}</span> of <span className="font-semibold text-foreground">{totalPages}</span> ({totalProducts} total items)
+              </div>
+              <div className="flex items-center gap-1.5 flex-wrap justify-center">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={page <= 1 || loading}
+                  onClick={() => loadProducts(page - 1, search, categoryFilter)}
+                  className="rounded-xl h-8 text-xs"
+                >
+                  Previous
+                </Button>
+
+                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                  let pNum = i + 1;
+                  if (totalPages > 5) {
+                    if (page > 3 && page < totalPages - 2) {
+                      pNum = page - 2 + i;
+                    } else if (page >= totalPages - 2) {
+                      pNum = totalPages - 4 + i;
+                    }
+                  }
+                  return (
+                    <button
+                      key={pNum}
+                      onClick={() => loadProducts(pNum, search, categoryFilter)}
+                      disabled={loading}
+                      className={`w-8 h-8 rounded-xl text-xs font-semibold transition-colors ${
+                        page === pNum
+                          ? 'bg-primary text-primary-foreground shadow-sm'
+                          : 'hover:bg-muted text-foreground'
+                      }`}
+                    >
+                      {pNum}
+                    </button>
+                  );
+                })}
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={page >= totalPages || loading}
+                  onClick={() => loadProducts(page + 1, search, categoryFilter)}
+                  className="rounded-xl h-8 text-xs"
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// COMMISSIONS TAB
+// ============================================================================
+
+interface CommissionRuleRecord {
+  _id: string;
+  level: "global" | "shop_type" | "category" | "vendor" | "product";
+  type: "percentage" | "fixed";
+  targetId?: string;
+  targetName?: string;
+  rate: number;
+  isActive: boolean;
+  createdAt: string;
+}
+
+const LEVEL_LABELS: Record<string, string> = {
+  global: "Global (all orders)",
+  shop_type: "Shop Type",
+  category: "Category",
+  vendor: "Vendor / Shop",
+  product: "Product",
+};
+
+function levelBadgeClass(level: string) {
+  switch (level) {
+    case "global": return "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300";
+    case "shop_type": return "bg-purple-100 text-purple-700 dark:bg-purple-900/40 dark:text-purple-300";
+    case "category": return "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300";
+    case "vendor": return "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300";
+    case "product": return "bg-pink-100 text-pink-700 dark:bg-pink-900/40 dark:text-pink-300";
+    default: return "bg-muted text-muted-foreground";
+  }
+}
+
+const BLANK_RULE = { level: "global" as CommissionRuleRecord["level"], type: "percentage" as CommissionRuleRecord["type"], targetId: "", targetName: "", rate: "5", isActive: true };
+
+function CommissionsTab() {
+  const [rules, setRules] = useState<CommissionRuleRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [form, setForm] = useState(BLANK_RULE);
+  const [saving, setSaving] = useState(false);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const d = await api.get<{ success: boolean; rules: CommissionRuleRecord[] }>("/commissions");
+      setRules(d.rules ?? []);
+    } catch { } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const setF = <K extends keyof typeof BLANK_RULE>(k: K, v: (typeof BLANK_RULE)[K]) => setForm(f => ({ ...f, [k]: v }));
+
+  const openAdd = () => { setForm(BLANK_RULE); setEditingId(null); setShowForm(true); };
+  const openEdit = (r: CommissionRuleRecord) => {
+    setForm({ level: r.level, type: r.type ?? "percentage", targetId: r.targetId ?? "", targetName: r.targetName ?? "", rate: String(r.rate), isActive: r.isActive });
+    setEditingId(r._id);
+    setShowForm(true);
+  };
+
+  const handleSave = async () => {
+    if (!form.rate || isNaN(Number(form.rate)) || Number(form.rate) < 0) { toast.error("Enter a valid rate"); return; }
+    if (form.level !== "global" && !form.targetId.trim() && !form.targetName.trim()) { toast.error("Target ID or name required for non-global rules"); return; }
+    setSaving(true);
+    try {
+      const payload = { level: form.level, type: form.type, targetId: form.targetId || undefined, targetName: form.targetName || undefined, rate: Number(form.rate), isActive: form.isActive };
+      if (editingId) { await api.patch(`/commissions/${editingId}`, payload); toast.success("Rule updated"); }
+      else { await api.post("/commissions", payload); toast.success("Rule created"); }
+      setShowForm(false); load();
+    } catch (e) { toast.error(e instanceof Error ? e.message : "Save failed"); }
+    finally { setSaving(false); }
+  };
+
+  const handleDelete = async (id: string) => {
+    try { await api.delete(`/commissions/${id}`); toast.success("Rule deleted"); setDeleteConfirmId(null); load(); }
+    catch { toast.error("Delete failed"); }
+  };
+
+  const handleToggleActive = async (r: CommissionRuleRecord) => {
+    try { await api.patch(`/commissions/${r._id}`, { isActive: !r.isActive }); load(); }
+    catch { toast.error("Update failed"); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Commission Rules</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">Higher-specificity rules override lower ones. Default is 5% when no rules exist.</p>
+        </div>
+        <Button onClick={openAdd} className="rounded-xl shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90">
+          <Plus className="w-4 h-4 mr-2" /> Add Rule
+        </Button>
+      </div>
+
+      <AnimatePresence>
+        {showForm && (
+          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="bg-card rounded-3xl neu-card p-6 space-y-4">
+            <h3 className="font-bold text-foreground">{editingId ? "Edit Rule" : "New Commission Rule"}</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm font-medium block mb-1">Level</label>
+                <select value={form.level} onChange={e => { setF("level", e.target.value as CommissionRuleRecord["level"]); setF("targetId", ""); setF("targetName", ""); }}
+                  className="w-full h-10 px-3 rounded-xl bg-background neu-inset border-none text-sm text-foreground appearance-none cursor-pointer">
+                  {Object.entries(LEVEL_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-sm font-medium block mb-1">Type</label>
+                <select value={form.type} onChange={e => setF("type", e.target.value as CommissionRuleRecord["type"])}
+                  className="w-full h-10 px-3 rounded-xl bg-background neu-inset border-none text-sm text-foreground appearance-none cursor-pointer">
+                  <option value="percentage">Percentage (%)</option>
+                  <option value="fixed">Fixed Amount (₹)</option>
+                </select>
+              </div>
+              {form.level !== "global" && (
+                <>
+                  <div>
+                    <label className="text-sm font-medium block mb-1">Target ID <span className="text-xs text-muted-foreground font-normal">(slug / shop ID)</span></label>
+                    <Input value={form.targetId} onChange={e => setF("targetId", e.target.value)} placeholder="e.g. grocery, shop-id-123" className="bg-background neu-inset border-none" />
+                  </div>
+                  <div>
+                    <label className="text-sm font-medium block mb-1">Target Name <span className="text-xs text-muted-foreground font-normal">(label)</span></label>
+                    <Input value={form.targetName} onChange={e => setF("targetName", e.target.value)} placeholder="e.g. Grocery, Fresh Mart" className="bg-background neu-inset border-none" />
+                  </div>
+                </>
+              )}
+              <div>
+                <label className="text-sm font-medium block mb-1">Rate {form.type === "percentage" ? "(%)" : "(₹ fixed)"}</label>
+                <Input type="number" min={0} step={form.type === "percentage" ? "0.1" : "1"} value={form.rate} onChange={e => setF("rate", e.target.value)} placeholder={form.type === "percentage" ? "5" : "50"} className="bg-background neu-inset border-none" />
+              </div>
+              <div className="flex items-center gap-3 self-end pb-1">
+                <button type="button" onClick={() => setF("isActive", !form.isActive)} className={`relative w-11 h-6 rounded-full transition-colors duration-200 ${form.isActive ? "bg-primary" : "bg-muted"}`}>
+                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform duration-200 ${form.isActive ? "translate-x-5" : "translate-x-0"}`} />
+                </button>
+                <span className="text-sm text-muted-foreground">{form.isActive ? "Active" : "Inactive"}</span>
+              </div>
+            </div>
+            <div className="flex justify-end gap-3 pt-1">
+              <Button variant="outline" onClick={() => setShowForm(false)} className="rounded-xl">Cancel</Button>
+              <Button onClick={handleSave} disabled={saving} className="rounded-xl shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90">
+                {saving ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Saving…</> : editingId ? "Update Rule" : "Create Rule"}
+              </Button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {loading ? (
+        <div className="space-y-3">{[1, 2, 3].map(i => <div key={i} className="h-16 bg-muted rounded-2xl animate-pulse" />)}</div>
+      ) : rules.length === 0 ? (
+        <div className="bg-card rounded-3xl neu-card p-16 text-center">
+          <Award className="w-12 h-12 mx-auto mb-3 text-muted-foreground opacity-25" />
+          <p className="font-semibold text-muted-foreground">No commission rules yet</p>
+          <p className="text-sm text-muted-foreground mt-1">A default 5% rate applies. Add rules to customise per level.</p>
+        </div>
+      ) : (
+        <div className="bg-card rounded-3xl neu-card overflow-hidden">
+          <div className="p-5 border-b border-border flex items-center justify-between">
+            <h3 className="font-bold text-foreground">Rules ({rules.length})</h3>
+            <button onClick={load} className="p-2 hover:bg-muted rounded-xl text-muted-foreground transition-colors" title="Refresh"><RefreshCw className="w-4 h-4" /></button>
+          </div>
+          <div className="divide-y divide-border/50">
+            {rules.map(r => (
+              <div key={r._id}>
+                <div className="p-4 flex items-center gap-3 flex-wrap">
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${levelBadgeClass(r.level)}`}>{LEVEL_LABELS[r.level] ?? r.level}</span>
+                      {r.targetName && <span className="text-sm font-semibold text-foreground">{r.targetName}</span>}
+                      {r.targetId && !r.targetName && <span className="text-sm font-mono text-muted-foreground">{r.targetId}</span>}
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {r.type === "fixed" ? `₹${r.rate} fixed per order` : `${r.rate}% of order value`}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button onClick={() => handleToggleActive(r)} className={`relative w-10 h-5 rounded-full transition-colors duration-200 ${r.isActive ? "bg-primary" : "bg-muted"}`}>
+                      <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${r.isActive ? "translate-x-5" : "translate-x-0"}`} />
+                    </button>
+                    <button onClick={() => openEdit(r)} className="p-2 rounded-xl hover:bg-muted text-muted-foreground transition-colors"><Edit2 className="w-4 h-4" /></button>
+                    <button onClick={() => setDeleteConfirmId(r._id)} className="p-2 rounded-xl hover:bg-destructive/10 text-destructive transition-colors"><Trash2 className="w-4 h-4" /></button>
+                  </div>
+                </div>
+                {deleteConfirmId === r._id && (
+                  <div className="px-4 py-3 bg-destructive/5 border-t border-destructive/20 flex items-center justify-between gap-3">
+                    <span className="text-sm text-destructive font-medium">Delete this rule?</span>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setDeleteConfirmId(null)} className="rounded-lg h-8">Cancel</Button>
+                      <Button size="sm" onClick={() => handleDelete(r._id)} className="rounded-lg h-8 bg-destructive text-white hover:bg-destructive/90 shadow-none">Delete</Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// SHOP TYPES TAB
+// ============================================================================
+
+interface ApiShopTypeRecord {
+  _id: string;
+  name: string;
+  slug: string;
+  commissionRate?: number;
+  isActive: boolean;
+}
+
+function ShopTypesTab() {
+  const [shopTypes, setShopTypes] = useState<ApiShopTypeRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [addName, setAddName] = useState("");
+  const [addRate, setAddRate] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [editingRate, setEditingRate] = useState<{ id: string; value: string } | null>(null);
+  const [deleteConfirmId2, setDeleteConfirmId2] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const d = await api.get<{ success: boolean; shopTypes: ApiShopTypeRecord[] }>("/shop-types");
+      setShopTypes(d.shopTypes ?? []);
+    } catch { } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleToggle = async (st: ApiShopTypeRecord) => {
+    setSaving(st._id);
+    try { await api.patch(`/shop-types/${st._id}`, { isActive: !st.isActive }); load(); }
+    catch { toast.error("Update failed"); } finally { setSaving(null); }
+  };
+
+  const handleSaveRate = async (id: string) => {
+    if (!editingRate) return;
+    const rate = Number(editingRate.value);
+    if (isNaN(rate) || rate < 0) { toast.error("Invalid rate"); return; }
+    setSaving(id);
+    try { await api.patch(`/shop-types/${id}`, { commissionRate: rate }); setEditingRate(null); load(); }
+    catch { toast.error("Update failed"); } finally { setSaving(null); }
+  };
+
+  const handleCreate = async () => {
+    if (!addName.trim()) { toast.error("Name is required"); return; }
+    setCreating(true);
+    try {
+      await api.post("/shop-types", { name: addName.trim(), commissionRate: addRate ? Number(addRate) : undefined });
+      toast.success("Shop type created"); setAddName(""); setAddRate(""); setShowAddForm(false); load();
+    } catch (e) { toast.error(e instanceof Error ? e.message : "Create failed"); } finally { setCreating(false); }
+  };
+
+  const handleDeleteType = async (id: string) => {
+    try { await api.delete(`/shop-types/${id}`); toast.success("Deleted"); setDeleteConfirmId2(null); load(); }
+    catch { toast.error("Delete failed"); }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Shop Types</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">Enable or disable shop types and set their default commission rates.</p>
+        </div>
+        <Button onClick={() => setShowAddForm(v => !v)} className="rounded-xl shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90">
+          <Plus className="w-4 h-4 mr-2" /> Add Type
+        </Button>
+      </div>
+
+      <AnimatePresence>
+        {showAddForm && (
+          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} className="bg-card rounded-3xl neu-card p-6 space-y-4">
+            <h3 className="font-bold text-foreground">New Shop Type</h3>
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="text-sm font-medium block mb-1">Name <span className="text-destructive">*</span></label>
+                <Input value={addName} onChange={e => setAddName(e.target.value)} placeholder="e.g. Bakery" className="bg-background neu-inset border-none" />
+              </div>
+              <div>
+                <label className="text-sm font-medium block mb-1">Commission Rate (%) <span className="text-muted-foreground font-normal text-xs">optional</span></label>
+                <Input type="number" min={0} max={100} value={addRate} onChange={e => setAddRate(e.target.value)} placeholder="5" className="bg-background neu-inset border-none" />
+              </div>
+            </div>
+            <div className="flex justify-end gap-3">
+              <Button variant="outline" onClick={() => setShowAddForm(false)} className="rounded-xl">Cancel</Button>
+              <Button onClick={handleCreate} disabled={creating} className="rounded-xl shadow-none neu-card bg-primary text-primary-foreground hover:bg-primary/90">
+                {creating ? <><RefreshCw className="w-4 h-4 mr-2 animate-spin" /> Creating…</> : "Create Type"}
+              </Button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {loading ? (
+        <div className="space-y-3">{[1, 2, 3, 4].map(i => <div key={i} className="h-16 bg-muted rounded-2xl animate-pulse" />)}</div>
+      ) : shopTypes.length === 0 ? (
+        <div className="bg-card rounded-3xl neu-card p-16 text-center">
+          <Building2 className="w-12 h-12 mx-auto mb-3 text-muted-foreground opacity-25" />
+          <p className="font-semibold text-muted-foreground">No shop types yet</p>
+          <p className="text-sm text-muted-foreground mt-1">Add shop types to categorise vendor shops and control visibility.</p>
+        </div>
+      ) : (
+        <div className="bg-card rounded-3xl neu-card overflow-hidden">
+          <div className="p-5 border-b border-border flex items-center justify-between">
+            <h3 className="font-bold text-foreground">All Types ({shopTypes.length})</h3>
+            <button onClick={load} className="p-2 hover:bg-muted rounded-xl text-muted-foreground transition-colors" title="Refresh"><RefreshCw className="w-4 h-4" /></button>
+          </div>
+          <div className="divide-y divide-border/50">
+            {shopTypes.map(st => (
+              <div key={st._id}>
+                <div className="p-4 flex items-center gap-3 flex-wrap">
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="font-semibold text-sm text-foreground">{st.name}</p>
+                      <span className="text-xs text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded">{st.slug}</span>
+                    </div>
+                    <div className="flex items-center gap-2 mt-1">
+                      {editingRate?.id === st._id ? (
+                        <div className="flex items-center gap-1.5">
+                          <Input type="number" min={0} max={100} value={editingRate.value}
+                            onChange={e => setEditingRate({ id: st._id, value: e.target.value })}
+                            onKeyDown={e => { if (e.key === "Enter") handleSaveRate(st._id); if (e.key === "Escape") setEditingRate(null); }}
+                            className="w-20 h-7 text-xs bg-background neu-inset border-none text-center" autoFocus />
+                          <span className="text-xs text-muted-foreground">%</span>
+                          <button onClick={() => handleSaveRate(st._id)} disabled={saving === st._id} className="p-1 rounded-lg bg-primary text-primary-foreground"><CheckCircle className="w-3.5 h-3.5" /></button>
+                          <button onClick={() => setEditingRate(null)} className="p-1 rounded-lg hover:bg-muted text-muted-foreground"><X className="w-3.5 h-3.5" /></button>
+                        </div>
+                      ) : (
+                        <button onClick={() => setEditingRate({ id: st._id, value: String(st.commissionRate ?? "") })} className="text-xs text-muted-foreground hover:text-foreground transition-colors flex items-center gap-1">
+                          {st.commissionRate != null ? `${st.commissionRate}% commission` : "No rate set — click to add"}
+                          <Edit2 className="w-3 h-3 opacity-60" />
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${st.isActive ? "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300" : "bg-muted text-muted-foreground"}`}>
+                      {st.isActive ? "Active" : "Disabled"}
+                    </span>
+                    <button onClick={() => handleToggle(st)} disabled={saving === st._id} className={`relative w-10 h-5 rounded-full transition-colors duration-200 ${st.isActive ? "bg-primary" : "bg-muted"}`}>
+                      <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform duration-200 ${st.isActive ? "translate-x-5" : "translate-x-0"}`} />
+                    </button>
+                    <button onClick={() => setDeleteConfirmId2(st._id)} className="p-2 rounded-xl hover:bg-destructive/10 text-destructive transition-colors"><Trash2 className="w-4 h-4" /></button>
+                  </div>
+                </div>
+                {deleteConfirmId2 === st._id && (
+                  <div className="px-4 py-3 bg-destructive/5 border-t border-destructive/20 flex items-center justify-between gap-3">
+                    <span className="text-sm text-destructive font-medium">Delete <span className="font-bold">{st.name}</span>?</span>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setDeleteConfirmId2(null)} className="rounded-lg h-8">Cancel</Button>
+                      <Button size="sm" onClick={() => handleDeleteType(st._id)} className="rounded-lg h-8 bg-destructive text-white hover:bg-destructive/90 shadow-none">Delete</Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// PAYOUTS TAB
+// ============================================================================
+
+interface ApiPayoutRecord {
+  _id: string;
+  vendorId: string;
+  vendorName: string;
+  shopId: string;
+  orderId?: string;
+  orderNumber?: string;
+  amount: number;
+  orderTotal?: number;
+  commissionAmount?: number;
+  deductionAmount?: number;
+  adjustedReason?: string;
+  status: "pending" | "processing" | "paid" | "failed";
+  ordersIncluded: string[];
+  scheduledDate?: string;
+  earlyPayoutRequested?: boolean;
+  earlyPayoutRequestedAt?: string;
+  earlyPayoutReason?: string;
+  paidAt?: string;
+  notes?: string;
+  createdAt: string;
+}
+
+const PAYOUT_FILTER_STATUSES = ["all", "early_requested", "pending", "processing", "paid", "failed"] as const;
+
+function payoutBadgeClass(status: string) {
+  switch (status) {
+    case "pending": return "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300";
+    case "processing": return "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300";
+    case "paid": return "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300";
+    case "failed": return "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300";
+    default: return "bg-muted text-muted-foreground";
+  }
+}
+
+function PayoutsTab() {
+  const [payouts, setPayouts] = useState<ApiPayoutRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filterStatus, setFilterStatus] = useState<string>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [notesMap, setNotesMap] = useState<Record<string, string>>({});
+  const [markingAllPaid, setMarkingAllPaid] = useState(false);
+
+  // Edit Payout Modal State
+  const [editingPayout, setEditingPayout] = useState<ApiPayoutRecord | null>(null);
+  const [editAmount, setEditAmount] = useState<string>("");
+  const [editDeduction, setEditDeduction] = useState<string>("");
+  const [editReason, setEditReason] = useState<string>("");
+  const [editDate, setEditDate] = useState<string>("");
+  const [editNotes, setEditNotes] = useState<string>("");
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      let q = "";
+      if (filterStatus === "early_requested") {
+        q = "?earlyRequested=true";
+      } else if (filterStatus !== "all") {
+        q = `?status=${filterStatus}`;
+      }
+      const d = await api.get<{ success: boolean; payouts: ApiPayoutRecord[] }>(`/payouts${q}`);
+      setPayouts(d.payouts ?? []);
+    } catch { } finally { setLoading(false); }
+  }, [filterStatus]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const handleUpdateStatus = async (id: string, status: string) => {
+    setUpdatingId(id);
+    try {
+      await api.patch(`/payouts/${id}`, { status, notes: notesMap[id] || undefined });
+      toast.success(`Marked as ${status}`);
+      load();
+    } catch { toast.error("Update failed"); } finally { setUpdatingId(null); }
+  };
+
+  const handleMarkAllPaid = async () => {
+    if (!window.confirm("Are you sure you want to mark ALL pending & processing shop payouts as PAID? This will settle all past balances.")) return;
+    setMarkingAllPaid(true);
+    try {
+      const res = await api.post<{ success: boolean; message: string; updatedCount: number }>("/payouts/mark-all-paid", {});
+      toast.success(res.message || "All payouts marked as paid!");
+      load();
+    } catch {
+      toast.error("Failed to mark all payouts as paid");
+    } finally {
+      setMarkingAllPaid(false);
+    }
+  };
+
+  const openEditModal = (p: ApiPayoutRecord) => {
+    setEditingPayout(p);
+    setEditAmount(String(p.amount ?? "0"));
+    setEditDeduction(String(p.deductionAmount ?? "0"));
+    setEditReason(p.adjustedReason ?? "");
+    const dateVal = p.scheduledDate ? new Date(p.scheduledDate).toISOString().split("T")[0] : "";
+    setEditDate(dateVal);
+    setEditNotes(p.notes ?? "");
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingPayout) return;
+    setSavingEdit(true);
+    try {
+      const amountNum = parseFloat(editAmount);
+      const deductionNum = parseFloat(editDeduction) || 0;
+      await api.patch(`/payouts/${editingPayout._id}`, {
+        amount: isNaN(amountNum) ? editingPayout.amount : amountNum,
+        deductionAmount: deductionNum,
+        adjustedReason: editReason.trim() || undefined,
+        scheduledDate: editDate ? new Date(editDate).toISOString() : undefined,
+        notes: editNotes.trim() || undefined,
+      });
+      toast.success("Payout details & schedule updated successfully");
+      setEditingPayout(null);
+      load();
+    } catch {
+      toast.error("Failed to update payout details");
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const earlyRequestedCount = payouts.filter(p => p.earlyPayoutRequested && p.status !== "paid").length;
+  const totalPending = payouts.filter(p => p.status === "pending" || p.status === "processing").reduce((s, p) => s + (p.amount ?? 0), 0);
+  const totalPaid = payouts.filter(p => p.status === "paid").reduce((s, p) => s + (p.amount ?? 0), 0);
+
+  const filteredPayouts = payouts.filter(p => {
+    if (filterStatus === "early_requested" && !p.earlyPayoutRequested) return false;
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase();
+      const matchVendor = p.vendorName?.toLowerCase().includes(q);
+      const matchOrder = p.orderNumber?.toLowerCase().includes(q) || p.orderId?.toLowerCase().includes(q);
+      const matchShop = p.shopId?.toLowerCase().includes(q);
+      if (!matchVendor && !matchOrder && !matchShop) return false;
+    }
+    return true;
+  });
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">Vendor Payouts & Settlements</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">Automated 3-day release schedule, admin order adjustments, and instant early payout management.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={handleMarkAllPaid}
+            disabled={markingAllPaid}
+            className="bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-sm text-xs font-bold gap-1.5 h-9"
+          >
+            {markingAllPaid ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <CheckCircle className="w-3.5 h-3.5" />}
+            Mark All Past as Paid
+          </Button>
+        </div>
+      </div>
+
+      {earlyRequestedCount > 0 && (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div className="p-2 bg-amber-500/20 text-amber-600 rounded-xl">
+              <Flame className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-sm font-bold text-foreground">
+                {earlyRequestedCount} Shop{earlyRequestedCount > 1 ? "s" : ""} Requested Early Payout
+              </p>
+              <p className="text-xs text-muted-foreground">Vendors requested expedited transfer for delivered orders.</p>
+            </div>
+          </div>
+          <Button
+            size="sm"
+            onClick={() => setFilterStatus("early_requested")}
+            className="bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-semibold h-8"
+          >
+            View Requests
+          </Button>
+        </div>
+      )}
+
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {[
+          { label: "Pending Settlements", value: formatINR(totalPending), sub: `${payouts.filter(p => p.status === "pending" || p.status === "processing").length} pending orders`, color: "text-amber-600" },
+          { label: "Total Settled / Paid", value: formatINR(totalPaid), sub: `${payouts.filter(p => p.status === "paid").length} paid records`, color: "text-green-600" },
+          { label: "Early Payout Requests", value: String(earlyRequestedCount), sub: "Needs urgent action", color: "text-orange-600" },
+          { label: "Default Payout Rule", value: "3 Days After Order", sub: "Admin can adjust date & Rs", color: "text-blue-600" },
+        ].map(c => (
+          <div key={c.label} className="bg-card rounded-2xl neu-card p-4">
+            <p className="text-xs text-muted-foreground font-medium">{c.label}</p>
+            <p className={`text-xl font-bold mt-1 ${c.color}`}>{c.value}</p>
+            <p className="text-xs text-muted-foreground mt-0.5">{c.sub}</p>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
+          {PAYOUT_FILTER_STATUSES.map(s => {
+            const label = s === "all" ? "All Payouts" : s === "early_requested" ? `⚡ Early Requests (${earlyRequestedCount})` : s;
+            return (
+              <button
+                key={s}
+                onClick={() => setFilterStatus(s)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-colors capitalize ${
+                  filterStatus === s
+                    ? "bg-primary text-primary-foreground shadow-sm"
+                    : "bg-card neu-card text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex items-center gap-2">
+          <div className="relative flex-1 sm:w-64">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search shop, vendor, order..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              className="h-8 pl-8 text-xs bg-card neu-inset border-none rounded-xl"
+            />
+          </div>
+          <button onClick={load} className="p-2 hover:bg-muted rounded-xl text-muted-foreground transition-colors" title="Refresh">
+            <RefreshCw className="w-4 h-4" />
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="space-y-3">{[1, 2, 3, 4].map(i => <div key={i} className="h-24 bg-muted rounded-2xl animate-pulse" />)}</div>
+      ) : filteredPayouts.length === 0 ? (
+        <div className="bg-card rounded-3xl neu-card p-16 text-center">
+          <CreditCard className="w-12 h-12 mx-auto mb-3 text-muted-foreground opacity-25" />
+          <p className="font-semibold text-muted-foreground">No payouts found {filterStatus !== "all" ? `under "${filterStatus}"` : ""}</p>
+          <p className="text-sm text-muted-foreground mt-1">New payouts are automatically generated when orders are placed and delivered.</p>
+        </div>
+      ) : (
+        <div className="bg-card rounded-3xl neu-card overflow-hidden">
+          <div className="divide-y divide-border/50">
+            {filteredPayouts.map(p => {
+              const scheduledStr = p.scheduledDate ? new Date(p.scheduledDate).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" }) : "3 Days from Order";
+              const isOverdue = p.status === "pending" && p.scheduledDate && new Date(p.scheduledDate).getTime() < Date.now();
+
+              return (
+                <div key={p._id} className="p-4 space-y-3 hover:bg-muted/20 transition-colors">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <p className="font-bold text-sm text-foreground">{p.vendorName || "Shop Partner"}</p>
+                        <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full ${payoutBadgeClass(p.status)}`}>
+                          {p.status.toUpperCase()}
+                        </span>
+                        {p.earlyPayoutRequested && p.status !== "paid" && (
+                          <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 dark:bg-orange-950 dark:text-orange-300 border border-orange-300 flex items-center gap-1 animate-pulse">
+                            ⚡ Early Request: {p.earlyPayoutReason || "Instant"}
+                          </span>
+                        )}
+                        {p.orderNumber && (
+                          <span className="text-[11px] font-mono font-semibold px-2 py-0.5 rounded-md bg-muted text-muted-foreground">
+                            Order #{p.orderNumber}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-3 text-xs text-muted-foreground mt-1 flex-wrap">
+                        <span>Created: {new Date(p.createdAt).toLocaleDateString("en-IN", { day: "numeric", month: "short", year: "numeric" })}</span>
+                        <span className={`font-semibold ${isOverdue ? "text-red-500 font-bold" : "text-blue-600 dark:text-blue-400"}`}>
+                          📅 Scheduled Payout: {scheduledStr} {isOverdue ? "(Due Now)" : "(3 Days After Order)"}
+                        </span>
+                        {p.paidAt && <span className="text-emerald-600 font-semibold">✓ Paid on {new Date(p.paidAt).toLocaleDateString("en-IN")}</span>}
+                      </div>
+
+                      {/* Adjustment notes if any */}
+                      {p.adjustedReason && (
+                        <div className="mt-1.5 p-2 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 text-xs text-amber-800 dark:text-amber-200">
+                          <span className="font-bold">⚠️ Admin Adjustment Applied:</span> {p.adjustedReason}
+                          {p.deductionAmount ? ` (−${formatINR(p.deductionAmount)})` : ""}
+                        </div>
+                      )}
+
+                      {p.notes && <p className="text-xs text-muted-foreground italic mt-1">Notes: "{p.notes}"</p>}
+
+                      {/* Financial breakdown */}
+                      <div className="flex items-center gap-4 mt-2 flex-wrap text-xs text-muted-foreground">
+                        {p.orderTotal != null && (
+                          <span>Order Value: <span className="font-semibold text-foreground">{formatINR(p.orderTotal)}</span></span>
+                        )}
+                        {p.commissionAmount != null && (
+                          <span>Commission: <span className="font-semibold text-destructive">−{formatINR(p.commissionAmount)}</span></span>
+                        )}
+                        {p.deductionAmount ? (
+                          <span>Deductions: <span className="font-semibold text-amber-600">−{formatINR(p.deductionAmount)}</span></span>
+                        ) : null}
+                        <span className="font-bold text-emerald-600 text-sm">Payable Amount: {formatINR(p.amount)}</span>
+                      </div>
+                    </div>
+
+                    <div className="text-right shrink-0 flex flex-col items-end gap-1">
+                      <p className="text-xl font-extrabold text-emerald-600">{formatINR(p.amount)}</p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => openEditModal(p)}
+                        className="h-7 px-2.5 text-xs rounded-lg gap-1 border-border text-foreground hover:bg-muted"
+                      >
+                        <Edit2 className="w-3 h-3" />
+                        Edit / Adjust
+                      </Button>
+                    </div>
+                  </div>
+
+                  {/* Actions row for pending/processing */}
+                  {p.status !== "paid" && (
+                    <div className="flex items-center gap-2 pt-2 border-t border-border/40 flex-wrap">
+                      <Input
+                        placeholder="Add payout reference or notes..."
+                        value={notesMap[p._id] ?? ""}
+                        onChange={e => setNotesMap(m => ({ ...m, [p._id]: e.target.value }))}
+                        className="flex-1 h-8 text-xs bg-background neu-inset border-none min-w-[140px] rounded-lg"
+                      />
+                      {p.status === "pending" && (
+                        <Button
+                          size="sm"
+                          onClick={() => handleUpdateStatus(p._id, "processing")}
+                          disabled={updatingId === p._id}
+                          className="rounded-lg h-8 text-xs shadow-none font-semibold"
+                        >
+                          {updatingId === p._id ? <RefreshCw className="w-3 h-3 animate-spin" /> : "Mark Processing"}
+                        </Button>
+                      )}
+                      <Button
+                        size="sm"
+                        onClick={() => handleUpdateStatus(p._id, "paid")}
+                        disabled={updatingId === p._id}
+                        className="rounded-lg h-8 bg-green-600 hover:bg-green-700 text-white shadow-none text-xs font-bold gap-1"
+                      >
+                        {updatingId === p._id ? <RefreshCw className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
+                        {p.earlyPayoutRequested ? "Approve & Pay Now" : "Mark Paid"}
+                      </Button>
+                      {p.status !== "failed" && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleUpdateStatus(p._id, "failed")}
+                          disabled={updatingId === p._id}
+                          className="rounded-lg h-8 text-destructive border-destructive/30 hover:bg-destructive/5 shadow-none text-xs"
+                        >
+                          Fail
+                        </Button>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Edit & Adjust Payout Modal */}
+      {editingPayout && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-card rounded-3xl neu-card max-w-lg w-full p-6 space-y-4 border border-border shadow-2xl">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-bold text-foreground">Adjust Payout & Schedule</h2>
+                <p className="text-xs text-muted-foreground">{editingPayout.vendorName} • Order #{editingPayout.orderNumber || editingPayout._id.slice(-6)}</p>
+              </div>
+              <button onClick={() => setEditingPayout(null)} className="p-1 rounded-full hover:bg-muted text-muted-foreground">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-bold text-foreground">Final Payable Amount (₹)</label>
+                <Input
+                  type="number"
+                  value={editAmount}
+                  onChange={e => setEditAmount(e.target.value)}
+                  placeholder="e.g. 450"
+                  className="mt-1 h-9 bg-background neu-inset border-none rounded-xl text-sm font-bold text-emerald-600"
+                />
+                <p className="text-[11px] text-muted-foreground mt-0.5">Original order total: {formatINR(editingPayout.orderTotal ?? editingPayout.amount)}</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-bold text-foreground">Deduction Amount (₹)</label>
+                  <Input
+                    type="number"
+                    value={editDeduction}
+                    onChange={e => setEditDeduction(e.target.value)}
+                    placeholder="e.g. 50"
+                    className="mt-1 h-9 bg-background neu-inset border-none rounded-xl text-xs"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-bold text-foreground">Scheduled Release Date</label>
+                  <Input
+                    type="date"
+                    value={editDate}
+                    onChange={e => setEditDate(e.target.value)}
+                    className="mt-1 h-9 bg-background neu-inset border-none rounded-xl text-xs"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-foreground">Adjustment Reason / Explanation</label>
+                <Input
+                  value={editReason}
+                  onChange={e => setEditReason(e.target.value)}
+                  placeholder="e.g. Shop delivered incorrect items / missing item deduction"
+                  className="mt-1 h-9 bg-background neu-inset border-none rounded-xl text-xs"
+                />
+                <p className="text-[11px] text-muted-foreground mt-0.5">This explanation will be clearly visible to the seller in their app.</p>
+              </div>
+
+              <div>
+                <label className="text-xs font-bold text-foreground">Internal Admin Notes</label>
+                <Textarea
+                  value={editNotes}
+                  onChange={e => setEditNotes(e.target.value)}
+                  placeholder="Internal notes for record keeping..."
+                  className="mt-1 bg-background neu-inset border-none rounded-xl text-xs"
+                  rows={2}
+                />
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-border">
+              <Button variant="outline" onClick={() => setEditingPayout(null)} className="rounded-xl h-9 text-xs">
+                Cancel
+              </Button>
+              <Button onClick={handleSaveEdit} disabled={savingEdit} className="bg-primary hover:bg-primary/90 text-primary-foreground rounded-xl h-9 text-xs font-bold">
+                {savingEdit ? <RefreshCw className="w-3.5 h-3.5 animate-spin mr-1" /> : null}
+                Save & Sync to App
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface ApiCategory {
+  _id: string;
+  name: string;
+  slug: string;
+  description?: string;
+  isActive: boolean;
+  commissionRate: number;
+  packagingCharge?: number | null;
+  emoji?: string;
+  color?: string;
+  parentTab?: string;
+  group?: string;
+  showOnHome?: boolean;
+  homeTab?: string;
+  filterOrder?: number;
+  createdAt: string;
+}
+
+// Restaurant-style categories manage their own packaging charges
+const RESTAURANT_SLUGS = new Set(["restaurant", "fast-food", "cloud-kitchen"]);
+
+function CategoriesTab() {
+  const [cats, setCats] = useState<ApiCategory[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editRate, setEditRate] = useState("");
+  const [editingPackagingId, setEditingPackagingId] = useState<string | null>(null);
+  const [editPackagingCharge, setEditPackagingCharge] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
+  const [createForm, setCreateForm] = useState({ name: "", slug: "", description: "", commissionRate: "5", packagingCharge: "", emoji: "", color: "#f59e0b", parentTab: "swiftmart", group: "Grocery & Kitchen", showOnHome: false, homeTab: "swiftmart", filterOrder: "0" });
+  const [creating, setCreating] = useState(false);
+  const [filterActive, setFilterActive] = useState<"all" | "active" | "inactive">("all");
+
+  const fetchCategories = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.get<{ success: boolean; categories: ApiCategory[] }>("/categories/all");
+      setCats(data.categories ?? []);
+    } catch {
+      toast.error("Failed to load categories");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchCategories(); }, [fetchCategories]);
+
+  const handleToggle = async (cat: ApiCategory) => {
+    setTogglingId(cat._id);
+    try {
+      await api.patch(`/categories/${cat._id}`, { isActive: !cat.isActive });
+      setCats(prev => prev.map(c => c._id === cat._id ? { ...c, isActive: !cat.isActive } : c));
+      toast.success(`"${cat.name}" ${cat.isActive ? "disabled" : "enabled"}`);
+    } catch {
+      toast.error("Failed to update category");
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  const handleSaveRate = async (cat: ApiCategory) => {
+    const rate = parseFloat(editRate);
+    if (isNaN(rate) || rate < 0) { toast.error("Enter a valid rate"); return; }
+    try {
+      await api.patch(`/categories/${cat._id}`, { commissionRate: rate });
+      setCats(prev => prev.map(c => c._id === cat._id ? { ...c, commissionRate: rate } : c));
+      setEditingId(null);
+      toast.success("Commission rate updated");
+    } catch {
+      toast.error("Failed to update rate");
+    }
+  };
+
+  const handleSavePackaging = async (cat: ApiCategory) => {
+    const charge = editPackagingCharge.trim() === "" ? null : parseInt(editPackagingCharge, 10);
+    if (charge !== null && (isNaN(charge) || charge < 0)) { toast.error("Enter a valid packaging charge"); return; }
+    try {
+      await api.patch(`/categories/${cat._id}`, { packagingCharge: charge });
+      setCats(prev => prev.map(c => c._id === cat._id ? { ...c, packagingCharge: charge } : c));
+      setEditingPackagingId(null);
+      toast.success("Packaging charge updated");
+    } catch {
+      toast.error("Failed to update packaging charge");
+    }
+  };
+
+  const handleDelete = async (cat: ApiCategory) => {
+    if (!confirm(`Delete category "${cat.name}"? This cannot be undone.`)) return;
+    setDeletingId(cat._id);
+    try {
+      await api.delete(`/categories/${cat._id}`);
+      setCats(prev => prev.filter(c => c._id !== cat._id));
+      toast.success("Category deleted");
+    } catch {
+      toast.error("Failed to delete category");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleCreate = async () => {
+    if (!createForm.name.trim() || !createForm.slug.trim()) { toast.error("Name and slug are required"); return; }
+    const rate = parseFloat(createForm.commissionRate);
+    if (isNaN(rate) || rate < 0) { toast.error("Enter a valid commission rate"); return; }
+    setCreating(true);
+    try {
+      const pkgCharge = createForm.packagingCharge.trim() ? parseInt(createForm.packagingCharge, 10) : undefined;
+      const data = await api.post<{ success: boolean; category: ApiCategory }>("/categories", {
+        name: createForm.name.trim(),
+        slug: createForm.slug.trim().toLowerCase().replace(/\s+/g, "-"),
+        description: createForm.description.trim(),
+        commissionRate: rate,
+        packagingCharge: pkgCharge != null && !isNaN(pkgCharge) ? pkgCharge : undefined,
+        isActive: true,
+        emoji: createForm.emoji.trim() || "🛍️",
+        color: createForm.color || "#f59e0b",
+        parentTab: createForm.parentTab.trim() || "swiftmart",
+        group: createForm.group.trim() || "Grocery & Kitchen",
+        showOnHome: createForm.showOnHome,
+        homeTab: createForm.homeTab,
+        filterOrder: parseInt(createForm.filterOrder, 10) || 0,
+      });
+      setCats(prev => [data.category, ...prev]);
+      setCreateForm({ name: "", slug: "", description: "", commissionRate: "5", packagingCharge: "", emoji: "", color: "#f59e0b", parentTab: "swiftmart", group: "Grocery & Kitchen", showOnHome: false, homeTab: "swiftmart", filterOrder: "0" });
+      setShowCreate(false);
+      toast.success("Category created");
+    } catch {
+      toast.error("Failed to create category");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const displayed = cats.filter(c =>
+    filterActive === "all" ? true : filterActive === "active" ? c.isActive : !c.isActive
+  );
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h2 className="text-xl font-bold text-foreground">Categories</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">Enable / disable categories and set per-category commission rates</p>
+        </div>
+        <Button onClick={() => setShowCreate(v => !v)} className="rounded-xl shadow-none gap-2">
+          <Plus className="w-4 h-4" />New Category
+        </Button>
+      </div>
+
+      {showCreate && (
+        <div className="neu-card rounded-2xl p-5 space-y-4">
+          <h3 className="font-semibold text-sm text-foreground">Create Category</h3>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Name *</label>
+              <Input value={createForm.name}
+                onChange={e => setCreateForm(f => ({ ...f, name: e.target.value, slug: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g, "-") }))}
+                placeholder="e.g. Electronics"
+                className="h-9 neu-inset border-none bg-background" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Slug * (auto-generated)</label>
+              <Input value={createForm.slug}
+                onChange={e => setCreateForm(f => ({ ...f, slug: e.target.value }))}
+                placeholder="e.g. electronics"
+                className="h-9 neu-inset border-none bg-background" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Emoji (shown on customer page)</label>
+              <Input value={createForm.emoji}
+                onChange={e => setCreateForm(f => ({ ...f, emoji: e.target.value }))}
+                placeholder="e.g. 📱"
+                className="h-9 neu-inset border-none bg-background" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Color (bubble background)</label>
+              <div className="flex gap-2 items-center">
+                <input type="color" value={createForm.color}
+                  onChange={e => setCreateForm(f => ({ ...f, color: e.target.value }))}
+                  className="w-9 h-9 rounded-lg cursor-pointer border-none bg-transparent" />
+                <span className="text-xs text-muted-foreground font-mono">{createForm.color}</span>
+              </div>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Commission Rate (%)</label>
+              <Input type="number" min="0" value={createForm.commissionRate}
+                onChange={e => setCreateForm(f => ({ ...f, commissionRate: e.target.value }))}
+                className="h-9 neu-inset border-none bg-background" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Packaging Charge (₹) <span className="text-muted-foreground/60">optional — leave blank for restaurant-type</span></label>
+              <Input type="number" min="0" step="1" value={createForm.packagingCharge}
+                onChange={e => setCreateForm(f => ({ ...f, packagingCharge: e.target.value }))}
+                placeholder="e.g. 6"
+                className="h-9 neu-inset border-none bg-background" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Description</label>
+              <Input value={createForm.description}
+                onChange={e => setCreateForm(f => ({ ...f, description: e.target.value }))}
+                placeholder="Optional"
+                className="h-9 neu-inset border-none bg-background" />
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Parent Tab</label>
+              <select value={createForm.parentTab}
+                onChange={e => setCreateForm(f => ({ ...f, parentTab: e.target.value }))}
+                className="w-full h-9 px-3 rounded-lg bg-background neu-inset border-none text-xs text-foreground appearance-none cursor-pointer"
+              >
+                <option value="swiftmart">SwiftMart Home (swiftmart)</option>
+                <option value="food">Cafe & Food (food)</option>
+                <option value="super">Super Store (super)</option>
+              </select>
+            </div>
+            <div className="space-y-1">
+              <label className="text-xs text-muted-foreground">Category Group</label>
+              <Input value={createForm.group}
+                onChange={e => setCreateForm(f => ({ ...f, group: e.target.value }))}
+                placeholder="e.g. Grocery & Kitchen"
+                className="h-9 neu-inset border-none bg-background" />
+            </div>
+            <div className="space-y-1 sm:col-span-2 border-t border-border/40 pt-3 mt-1">
+              <label className="flex items-center gap-1.5 font-semibold text-xs text-foreground cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={createForm.showOnHome}
+                  onChange={e => setCreateForm(f => ({ ...f, showOnHome: e.target.checked }))}
+                  className="w-3.5 h-3.5 rounded border-none bg-background neu-inset cursor-pointer accent-primary"
+                />
+                Show on Home Screen Filter
+              </label>
+            </div>
+            {createForm.showOnHome && (
+              <>
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">Home Tab Location</label>
+                  <select value={createForm.homeTab}
+                    onChange={e => setCreateForm(f => ({ ...f, homeTab: e.target.value }))}
+                    className="w-full h-9 px-3 rounded-lg bg-background neu-inset border-none text-xs text-foreground appearance-none cursor-pointer"
+                  >
+                    <option value="swiftmart">SwiftMart (swiftmart)</option>
+                    <option value="super">Super Store (super)</option>
+                    <option value="food">Cafe & Food (food)</option>
+                    <option value="rakhi">Festive (rakhi)</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-xs text-muted-foreground">Filter Order (sorting)</label>
+                  <Input type="number" min="0" value={createForm.filterOrder}
+                    onChange={e => setCreateForm(f => ({ ...f, filterOrder: e.target.value }))}
+                    className="h-9 neu-inset border-none bg-background text-xs" />
+                </div>
+              </>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <Button onClick={handleCreate} disabled={creating} className="rounded-xl shadow-none">
+              {creating ? <Loader2 className="w-4 h-4 animate-spin" /> : "Create"}
+            </Button>
+            <Button variant="outline" onClick={() => setShowCreate(false)} className="rounded-xl shadow-none">Cancel</Button>
+          </div>
+        </div>
+      )}
+
+      <div className="flex gap-2 flex-wrap items-center">
+        {(["all", "active", "inactive"] as const).map(f => (
+          <Button key={f} size="sm" variant={filterActive === f ? "default" : "outline"}
+            onClick={() => setFilterActive(f)} className="rounded-lg shadow-none capitalize">
+            {f}
+          </Button>
+        ))}
+        <span className="ml-auto text-xs text-muted-foreground">
+          {displayed.length} categor{displayed.length === 1 ? "y" : "ies"}
+        </span>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        </div>
+      ) : displayed.length === 0 ? (
+        <div className="text-center py-16 text-muted-foreground text-sm">No categories found</div>
+      ) : (
+        <div className="space-y-3">
+          {displayed.map(cat => (
+            <div key={cat._id} className="neu-card rounded-2xl p-4 flex items-center gap-4 flex-wrap">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 text-xl" style={{ backgroundColor: cat.color ? `${cat.color}22` : 'hsl(var(--muted))' }}>
+                {cat.emoji || "🛍️"}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold text-sm text-foreground">{cat.name}</span>
+                  <Badge variant={cat.isActive ? "default" : "secondary"} className="text-xs">
+                    {cat.isActive ? "Active" : "Inactive"}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground font-mono bg-muted px-1.5 py-0.5 rounded">{cat.slug}</span>
+                </div>
+                {cat.description && (
+                  <p className="text-xs text-muted-foreground mt-0.5 truncate">{cat.description}</p>
+                )}
+                <div className="flex items-center gap-3 mt-1.5 flex-wrap">
+                  {cat.parentTab && (
+                    <span className="text-[10px] bg-primary/10 text-primary px-2 py-0.5 rounded-full font-medium">
+                      Tab: {cat.parentTab}
+                    </span>
+                  )}
+                  {cat.group && (
+                    <span className="text-[10px] bg-blue-500/10 text-blue-600 px-2 py-0.5 rounded-full font-medium">
+                      Group: {cat.group}
+                    </span>
+                  )}
+                  {cat.showOnHome && (
+                    <span className="text-[10px] bg-green-500/10 text-green-600 px-2 py-0.5 rounded-full font-medium flex items-center gap-1">
+                      🏠 Home Filter ({cat.homeTab || "swiftmart"} · Order: {cat.filterOrder ?? 0})
+                    </span>
+                  )}
+                </div>
+
+                {/* Homepage Filter Settings */}
+                <div className="mt-3 pt-3 border-t border-border/40 flex items-center gap-4 flex-wrap text-xs">
+                  <label className="flex items-center gap-1.5 font-medium text-foreground cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={cat.showOnHome || false}
+                      onChange={async e => {
+                        const show = e.target.checked;
+                        try {
+                          await api.patch(`/categories/${cat._id}`, { showOnHome: show });
+                          setCats(prev => prev.map(c => c._id === cat._id ? { ...c, showOnHome: show } : c));
+                          toast.success(`Home filter status updated for "${cat.name}"`);
+                        } catch {
+                          toast.error("Failed to update home filter status");
+                        }
+                      }}
+                      className="w-3.5 h-3.5 rounded border-none bg-background neu-inset cursor-pointer accent-primary"
+                    />
+                    Show on Home Screen Filter
+                  </label>
+
+                  {cat.showOnHome && (
+                    <>
+                      <div className="flex items-center gap-1">
+                        <span className="text-muted-foreground text-[10px]">Location:</span>
+                        <select
+                          value={cat.homeTab || "swiftmart"}
+                          onChange={async e => {
+                            const tab = e.target.value;
+                            try {
+                              await api.patch(`/categories/${cat._id}`, { homeTab: tab });
+                              setCats(prev => prev.map(c => c._id === cat._id ? { ...c, homeTab: tab } : c));
+                              toast.success(`Home tab updated for "${cat.name}"`);
+                            } catch {
+                              toast.error("Failed to update home tab");
+                            }
+                          }}
+                          className="h-7 px-1.5 rounded-lg bg-background neu-inset border-none text-[10px] text-foreground font-medium cursor-pointer"
+                        >
+                          <option value="swiftmart">SwiftMart (swiftmart)</option>
+                          <option value="super">Super Store (super)</option>
+                          <option value="food">Cafe & Food (food)</option>
+                          <option value="rakhi">Festive (rakhi)</option>
+                        </select>
+                      </div>
+
+                      <div className="flex items-center gap-1">
+                        <span className="text-muted-foreground text-[10px]">Sort Order:</span>
+                        <input
+                          type="number"
+                          value={cat.filterOrder ?? 0}
+                          onChange={e => {
+                            const val = parseInt(e.target.value, 10) || 0;
+                            setCats(prev => prev.map(c => c._id === cat._id ? { ...c, filterOrder: val } : c));
+                          }}
+                          onBlur={async e => {
+                            const val = parseInt(e.target.value, 10) || 0;
+                            try {
+                              await api.patch(`/categories/${cat._id}`, { filterOrder: val });
+                              toast.success(`Filter order updated for "${cat.name}"`);
+                            } catch {
+                              toast.error("Failed to update filter order");
+                            }
+                          }}
+                          className="w-12 h-7 px-1 rounded-lg bg-background neu-inset border-none text-[10px] text-foreground font-medium text-center font-mono"
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2 flex-wrap shrink-0">
+                {editingId === cat._id ? (
+                  <>
+                    <Input type="number" min="0" value={editRate}
+                      onChange={e => setEditRate(e.target.value)}
+                      className="w-24 h-8 text-xs neu-inset border-none bg-background"
+                      placeholder="Rate %" />
+                    <Button size="sm" onClick={() => handleSaveRate(cat)} className="rounded-lg h-8 shadow-none">Save</Button>
+                    <Button size="sm" variant="outline" onClick={() => setEditingId(null)} className="rounded-lg h-8 shadow-none">Cancel</Button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => { setEditingId(cat._id); setEditRate(String(cat.commissionRate)); }}
+                    className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-lg hover:bg-muted"
+                  >
+                    <Edit2 className="w-3 h-3" />
+                    {cat.commissionRate}% commission
+                  </button>
+                )}
+
+                {/* Packaging charge — hidden for restaurant-type slugs (they self-manage) */}
+                {!RESTAURANT_SLUGS.has(cat.slug) && (
+                  editingPackagingId === cat._id ? (
+                    <>
+                      <Input type="number" min="0" step="1" value={editPackagingCharge}
+                        onChange={e => setEditPackagingCharge(e.target.value)}
+                        className="w-20 h-8 text-xs neu-inset border-none bg-background"
+                        placeholder="₹ pkg" />
+                      <Button size="sm" onClick={() => handleSavePackaging(cat)} className="rounded-lg h-8 shadow-none">Save</Button>
+                      <Button size="sm" variant="outline" onClick={() => setEditingPackagingId(null)} className="rounded-lg h-8 shadow-none">Cancel</Button>
+                    </>
+                  ) : (
+                    <button
+                      onClick={() => { setEditingPackagingId(cat._id); setEditPackagingCharge(cat.packagingCharge != null ? String(cat.packagingCharge) : ""); }}
+                      className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-lg hover:bg-muted"
+                    >
+                      <Edit2 className="w-3 h-3" />
+                      {cat.packagingCharge != null ? `₹${cat.packagingCharge} pkg` : "No pkg charge"}
+                    </button>
+                  )
+                )}
+
+                <Button size="sm" variant="outline"
+                  onClick={() => handleToggle(cat)}
+                  disabled={togglingId === cat._id}
+                  className={`rounded-lg h-8 shadow-none gap-1.5 ${
+                    cat.isActive
+                      ? "text-destructive border-destructive/30 hover:bg-destructive/5"
+                      : "text-green-600 border-green-600/30 hover:bg-green-50 dark:hover:bg-green-950"
+                  }`}
+                >
+                  {togglingId === cat._id
+                    ? <Loader2 className="w-3 h-3 animate-spin" />
+                    : cat.isActive
+                      ? <><EyeOff className="w-3 h-3" />Disable</>
+                      : <><Eye className="w-3 h-3" />Enable</>
+                  }
+                </Button>
+
+                <Button size="sm" variant="outline"
+                  onClick={() => handleDelete(cat)}
+                  disabled={deletingId === cat._id}
+                  className="rounded-lg h-8 shadow-none text-destructive border-destructive/30 hover:bg-destructive/5"
+                >
+                  {deletingId === cat._id
+                    ? <Loader2 className="w-3 h-3 animate-spin" />
+                    : <Trash2 className="w-3 h-3" />
+                  }
+                </Button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface AdminReviewProduct {
+  _id: string;
+  name: string;
+  category: string;
+  price: number;
+  discountedPrice?: number;
+  images?: string[];
+  image?: string;
+  stock: number;
+  unit?: string;
+  shopId: string;
+  shopName: string;
+  status: "pending" | "active" | "inactive" | "rejected" | "out_of_stock";
+  createdAt: string;
+}
+
+const APPROVAL_STATUS_CONFIG = {
+  pending:      { label: "Pending",   className: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400" },
+  active:       { label: "Active",    className: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400" },
+  inactive:     { label: "Inactive",  className: "bg-muted text-muted-foreground" },
+  rejected:     { label: "Rejected",  className: "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400" },
+  out_of_stock: { label: "No Stock",  className: "bg-orange-100 text-orange-700 dark:bg-orange-900/40 dark:text-orange-400" },
+} as const;
+
+const REJECTION_REASONS = [
+  "Wrong category selected",
+  "Incomplete product information",
+  "Duplicate product",
+  "Restricted product",
+  "Poor quality images",
+  "Other",
+] as const;
+
+function ProductApprovalsTab() {
+  const [products, setProducts] = useState<AdminReviewProduct[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState<"pending" | "active" | "rejected" | "all">("pending");
+  const [actingId, setActingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // Reject modal state
+  const [rejectTarget, setRejectTarget] = useState<AdminReviewProduct | null>(null);
+  const [rejectReason, setRejectReason] = useState<string>(REJECTION_REASONS[0]);
+  const [rejectCustom, setRejectCustom] = useState("");
+  const [submittingReject, setSubmittingReject] = useState(false);
+
+  const fetchProducts = useCallback(async (s: string) => {
+    setLoading(true);
+    try {
+      const data = await api.get<{ success: boolean; products: AdminReviewProduct[] }>(
+        `/products/admin-review?status=${s}&limit=100`
+      );
+      setProducts(data.products ?? []);
+    } catch {
+      toast.error("Failed to load products");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchProducts(statusFilter); }, [statusFilter, fetchProducts]);
+
+  const handleApprove = async (p: AdminReviewProduct) => {
+    setActingId(p._id);
+    try {
+      await api.patch(`/products/${p._id}/approval`, { action: "approve" });
+      setProducts(prev => prev.filter(x => x._id !== p._id));
+      toast.success(`"${p.name}" approved — now visible to customers`);
+    } catch {
+      toast.error("Failed to approve product");
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const openRejectModal = (p: AdminReviewProduct) => {
+    setRejectTarget(p);
+    setRejectReason(REJECTION_REASONS[0]);
+    setRejectCustom("");
+  };
+
+  const submitReject = async () => {
+    if (!rejectTarget) return;
+    const finalReason = rejectReason === "Other" ? rejectCustom.trim() : rejectReason;
+    if (!finalReason) { toast.error("Please enter a rejection reason"); return; }
+    setSubmittingReject(true);
+    try {
+      await api.patch(`/products/${rejectTarget._id}/approval`, {
+        action: "reject",
+        rejectionReason: finalReason,
+      });
+      setProducts(prev => prev.filter(x => x._id !== rejectTarget._id));
+      toast.success(`"${rejectTarget.name}" rejected`);
+      setRejectTarget(null);
+    } catch {
+      toast.error("Failed to reject product");
+    } finally {
+      setSubmittingReject(false);
+    }
+  };
+
+  const handleDelete = async (p: AdminReviewProduct) => {
+    if (!confirm(`Permanently delete "${p.name}"?`)) return;
+    setDeletingId(p._id);
+    try {
+      await api.delete(`/products/${p._id}`);
+      setProducts(prev => prev.filter(x => x._id !== p._id));
+      toast.success("Product deleted");
+    } catch {
+      toast.error("Failed to delete product");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const tabs: { key: typeof statusFilter; label: string }[] = [
+    { key: "pending",  label: "Pending" },
+    { key: "active",   label: "Approved" },
+    { key: "rejected", label: "Rejected" },
+    { key: "all",      label: "All" },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-xl font-bold text-foreground">Product Approvals</h2>
+        <p className="text-sm text-muted-foreground mt-0.5">Review vendor product submissions before they go live</p>
+      </div>
+
+      <div className="flex gap-2 flex-wrap items-center">
+        {tabs.map(t => (
+          <Button key={t.key} size="sm" variant={statusFilter === t.key ? "default" : "outline"}
+            onClick={() => setStatusFilter(t.key)} className="rounded-lg shadow-none">
+            {t.label}
+          </Button>
+        ))}
+        <span className="ml-auto text-xs text-muted-foreground">{products.length} product{products.length !== 1 ? "s" : ""}</span>
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-16">
+          <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+        </div>
+      ) : products.length === 0 ? (
+        <div className="text-center py-16 text-muted-foreground text-sm">
+          {statusFilter === "pending" ? "No products awaiting approval" : "No products found"}
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {products.map(p => {
+            const thumb = p.images?.[0] ?? p.image;
+            const cfg = APPROVAL_STATUS_CONFIG[p.status] ?? APPROVAL_STATUS_CONFIG.pending;
+            const isActing = actingId === p._id;
+            const isDeleting = deletingId === p._id;
+            return (
+              <div key={p._id} className="neu-card rounded-2xl p-4 flex gap-4 items-start flex-wrap">
+                {/* Image */}
+                <div className="w-16 h-16 rounded-xl bg-background neu-inset p-1.5 flex-shrink-0 overflow-hidden">
+                  {thumb ? (
+                    <img src={thumb} alt={p.name} className="w-full h-full object-contain"
+                      onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center text-muted-foreground">
+                      <Package className="w-6 h-6" />
+                    </div>
+                  )}
+                </div>
+
+                {/* Info */}
+                <div className="flex-1 min-w-0 space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-sm text-foreground truncate">{p.name}</span>
+                    <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${cfg.className}`}>{cfg.label}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+                    <span className="flex items-center gap-1"><Store className="w-3 h-3" />{p.shopName}</span>
+                    <span className="capitalize">{p.category}</span>
+                    <span className="text-primary font-semibold text-sm">{formatINR(p.price)}</span>
+                    <span>Stock: {p.stock}</span>
+                  </div>
+                  {p.status === "rejected" && (p as AdminReviewProduct & { rejectionReason?: string }).rejectionReason && (
+                    <p className="text-xs text-red-600 dark:text-red-400 mt-1">
+                      Reason: {(p as AdminReviewProduct & { rejectionReason?: string }).rejectionReason}
+                    </p>
+                  )}
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center gap-2 flex-wrap shrink-0">
+                  {p.status !== "active" && (
+                    <Button size="sm" onClick={() => handleApprove(p)} disabled={isActing || isDeleting}
+                      className="rounded-lg h-8 shadow-none bg-emerald-600 hover:bg-emerald-700 text-white gap-1.5">
+                      {isActing ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />}
+                      Approve
+                    </Button>
+                  )}
+                  {p.status !== "rejected" && (
+                    <Button size="sm" variant="outline" onClick={() => openRejectModal(p)} disabled={isActing || isDeleting}
+                      className="rounded-lg h-8 shadow-none text-amber-600 border-amber-300 hover:bg-amber-50 dark:hover:bg-amber-950 gap-1.5">
+                      <XCircle className="w-3 h-3" />Reject
+                    </Button>
+                  )}
+                  <Button size="sm" variant="outline" onClick={() => handleDelete(p)} disabled={isActing || isDeleting}
+                    className="rounded-lg h-8 shadow-none text-destructive border-destructive/30 hover:bg-destructive/5">
+                    {isDeleting ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Reject modal */}
+      {rejectTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50" onClick={() => { if (!submittingReject) setRejectTarget(null); }}>
+          <div className="bg-card rounded-2xl neu-card p-6 w-full max-w-md space-y-4" onClick={e => e.stopPropagation()}>
+            <div>
+              <h3 className="font-bold text-foreground">Reject Product</h3>
+              <p className="text-sm text-muted-foreground mt-0.5 truncate">"{rejectTarget.name}"</p>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-xs font-medium text-foreground">Rejection Reason *</label>
+              <div className="space-y-2">
+                {REJECTION_REASONS.map(r => (
+                  <label key={r} className={`flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-colors ${rejectReason === r ? "bg-destructive/10 border border-destructive/30" : "bg-background neu-inset hover:bg-muted"}`}>
+                    <input type="radio" name="rejectReason" value={r} checked={rejectReason === r}
+                      onChange={() => setRejectReason(r)} className="accent-destructive shrink-0" />
+                    <span className="text-sm text-foreground">{r}</span>
+                  </label>
+                ))}
+              </div>
+              {rejectReason === "Other" && (
+                <Input
+                  value={rejectCustom}
+                  onChange={e => setRejectCustom(e.target.value)}
+                  placeholder="Describe the reason..."
+                  className="mt-2 neu-inset border-none bg-background"
+                />
+              )}
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <Button variant="outline" onClick={() => setRejectTarget(null)} disabled={submittingReject}
+                className="flex-1 rounded-xl shadow-none">Cancel</Button>
+              <Button onClick={submitReject} disabled={submittingReject}
+                className="flex-1 rounded-xl shadow-none bg-destructive hover:bg-destructive/90 text-destructive-foreground gap-2">
+                {submittingReject ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
+                Confirm Reject
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Support Tickets Tab ──────────────────────────────────────────────────────
+
+interface SupportTicket {
+  id: string;
+  userId: string;
+  userPhone: string;
+  userName: string;
+  category: string;
+  subject: string;
+  message: string;
+  status: string;
+  adminNote?: string;
+  resolvedBy?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function SupportTicketsTab() {
+  const [tickets, setTickets] = useState<SupportTicket[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [filter, setFilter] = useState<'all' | 'open' | 'resolved' | 'closed'>('all');
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [noteInputs, setNoteInputs] = useState<Record<string, string>>({});
+  const [acting, setActing] = useState<string | null>(null);
+
+  const fetchTickets = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.get<{ success: boolean; tickets: SupportTicket[] }>("/support");
+      if (data.success) setTickets(data.tickets);
+    } catch {
+      toast.error("Failed to load support tickets");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void fetchTickets(); }, [fetchTickets]);
+
+  const filtered = tickets.filter(t => filter === 'all' || t.status === filter);
+  const openCount = tickets.filter(t => t.status === 'open').length;
+  const resolvedCount = tickets.filter(t => t.status === 'resolved').length;
+  const closedCount = tickets.filter(t => t.status === 'closed').length;
+
+  const categoryLabel: Record<string, string> = {
+    general: 'General', order: 'Order', payment: 'Payment',
+    delivery: 'Delivery', product: 'Product', vendor: 'Vendor',
+    account: 'Account', other: 'Other',
+  };
+
+  const statusColor = (s: string) => {
+    if (s === 'open') return 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300';
+    if (s === 'resolved') return 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300';
+    return 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300';
+  };
+
+  const categoryColor = (c: string) => {
+    const map: Record<string, string> = {
+      order: 'bg-blue-100 text-blue-800',
+      payment: 'bg-purple-100 text-purple-800',
+      delivery: 'bg-amber-100 text-amber-800',
+      product: 'bg-teal-100 text-teal-800',
+      vendor: 'bg-orange-100 text-orange-800',
+      account: 'bg-pink-100 text-pink-800',
+    };
+    return map[c] ?? 'bg-slate-100 text-slate-800';
+  };
+
+  const handleAction = async (id: string, action: 'resolve' | 'close') => {
+    setActing(id + action);
+    try {
+      await api.patch<{ success: boolean }>(`/support/${id}/${action}`, { adminNote: noteInputs[id] ?? '' });
+      toast.success(action === 'resolve' ? 'Ticket marked as resolved' : 'Ticket closed');
+      setExpandedId(null);
+      await fetchTickets();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Action failed');
+    } finally {
+      setActing(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div className="flex items-center gap-3">
+          <h2 className="text-2xl font-bold">Support Tickets</h2>
+          <div className="flex gap-2">
+            <Badge className="bg-red-100 text-red-800 border-none">{openCount} Open</Badge>
+            <Badge className="bg-green-100 text-green-800 border-none hidden sm:inline-flex">{resolvedCount} Resolved</Badge>
+            <Badge className="bg-slate-100 text-slate-700 border-none hidden sm:inline-flex">{closedCount} Closed</Badge>
+          </div>
+        </div>
+        <Button variant="ghost" size="sm" onClick={() => void fetchTickets()} className="text-primary">
+          <RefreshCw className="w-4 h-4 mr-1" /> Refresh
+        </Button>
+      </div>
+
+      <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
+        {(['all', 'open', 'resolved', 'closed'] as const).map(f => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`px-4 py-2 rounded-xl text-sm font-medium capitalize whitespace-nowrap transition-all ${
+              filter === f ? 'bg-primary text-primary-foreground neu-card' : 'bg-background text-muted-foreground neu-inset'
+            }`}
+          >
+            {f}
+          </button>
+        ))}
+      </div>
+
+      {loading ? (
+        <div className="flex justify-center py-16">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center p-16 bg-card rounded-3xl neu-inset text-muted-foreground">
+          <HelpCircle className="w-12 h-12 mx-auto mb-4 opacity-20" />
+          <p>No {filter === 'all' ? '' : filter} tickets</p>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          {filtered.map(ticket => (
+            <div key={ticket.id} className="bg-card rounded-3xl neu-card overflow-hidden">
+              {/* Header row */}
+              <button
+                type="button"
+                onClick={() => setExpandedId(expandedId === ticket.id ? null : ticket.id)}
+                className="w-full p-5 flex items-start gap-4 text-left"
+              >
+                <div className="w-10 h-10 rounded-2xl bg-primary/10 flex items-center justify-center text-primary flex-shrink-0 mt-0.5">
+                  <MessageSquare className="w-5 h-5" />
+                </div>
+                <div className="flex-1 min-w-0 space-y-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="font-semibold text-foreground truncate">{ticket.subject}</span>
+                    <Badge className={`${statusColor(ticket.status)} border-none text-xs px-2 py-0.5 capitalize`}>
+                      {ticket.status}
+                    </Badge>
+                    <Badge className={`${categoryColor(ticket.category)} border-none text-xs px-2 py-0.5`}>
+                      {categoryLabel[ticket.category] ?? ticket.category}
+                    </Badge>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground flex-wrap">
+                    <User className="w-3 h-3" />
+                    <span>{ticket.userName || 'Unknown'}</span>
+                    <span>·</span>
+                    <span>{ticket.userPhone}</span>
+                    <span>·</span>
+                    <span>{new Date(ticket.createdAt).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                  </div>
+                </div>
+                {expandedId === ticket.id ? <ChevronUp className="w-5 h-5 text-muted-foreground flex-shrink-0" /> : <ChevronDown className="w-5 h-5 text-muted-foreground flex-shrink-0" />}
+              </button>
+
+              {/* Expanded content */}
+              {expandedId === ticket.id && (
+                <div className="px-5 pb-5 space-y-4 border-t border-border pt-4">
+                  <div className="bg-background p-4 rounded-2xl neu-inset text-sm text-foreground leading-relaxed whitespace-pre-wrap">
+                    {ticket.message}
+                  </div>
+
+                  {ticket.adminNote && (
+                    <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 p-3 rounded-2xl text-sm">
+                      <p className="text-xs font-semibold text-green-700 dark:text-green-400 mb-1">Admin Note</p>
+                      <p className="text-green-800 dark:text-green-300">{ticket.adminNote}</p>
+                    </div>
+                  )}
+
+                  {ticket.status === 'open' && (
+                    <div className="space-y-3">
+                      <textarea
+                        value={noteInputs[ticket.id] ?? ''}
+                        onChange={e => setNoteInputs(prev => ({ ...prev, [ticket.id]: e.target.value }))}
+                        placeholder="Optional admin note / response to user…"
+                        rows={2}
+                        className="w-full bg-background neu-inset border-none rounded-2xl px-4 py-3 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-primary"
+                      />
+                      <div className="flex gap-3">
+                        <Button
+                          onClick={() => void handleAction(ticket.id, 'resolve')}
+                          disabled={acting === ticket.id + 'resolve'}
+                          className="flex-1 rounded-xl shadow-none neu-card bg-green-600 text-white hover:bg-green-700"
+                          size="sm"
+                        >
+                          {acting === ticket.id + 'resolve' ? <Loader2 className="w-4 h-4 animate-spin" /> : <><CheckCircle className="w-4 h-4 mr-1.5" /> Mark Resolved</>}
+                        </Button>
+                        <Button
+                          onClick={() => void handleAction(ticket.id, 'close')}
+                          disabled={acting === ticket.id + 'close'}
+                          variant="outline"
+                          className="flex-1 rounded-xl shadow-none neu-inset border-none"
+                          size="sm"
+                        >
+                          {acting === ticket.id + 'close' ? <Loader2 className="w-4 h-4 animate-spin" /> : <><XCircle className="w-4 h-4 mr-1.5" /> Close</>}
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Trending Products Manager Tab ───────────────────────────────────────────
+type TrendingProduct = {
+  _id: string;
+  name: string;
+  category: string;
+  shopName: string;
+  images: string[];
+  price: number;
+  stock: number;
+  status: string;
+  trending: boolean;
+  unitsSold: number;
+  revenue: number;
+};
+
+type SortKey = 'unitsSold' | 'revenue' | 'name' | 'stock';
+
+function TrendingProductsTab() {
+  const [products, setProducts] = useState<TrendingProduct[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [subTab, setSubTab] = useState<'most-sold' | 'all'>('most-sold');
+  const [search, setSearch] = useState('');
+  const [sortKey, setSortKey] = useState<SortKey>('unitsSold');
+  const [sortAsc, setSortAsc] = useState(false);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+
+  const fetchProducts = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.get<{ success: boolean; products: TrendingProduct[] }>('/products/trending-manager?status=all');
+      setProducts(data.products ?? []);
+    } catch {
+      toast.error('Failed to load products');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void fetchProducts(); }, [fetchProducts]);
+
+  const toggleTrending = async (product: TrendingProduct) => {
+    setTogglingId(product._id);
+    const newVal = !product.trending;
+    try {
+      await api.patch(`/products/${product._id}`, { trending: newVal });
+      setProducts(prev => prev.map(p => p._id === product._id ? { ...p, trending: newVal } : p));
+      toast.success(newVal ? `"${product.name}" added to Trending` : `"${product.name}" removed from Trending`);
+    } catch {
+      toast.error('Failed to update trending status');
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  const cycleSort = (key: SortKey) => {
+    if (sortKey === key) setSortAsc(p => !p);
+    else { setSortKey(key); setSortAsc(false); }
+  };
+
+  const displayList = useMemo(() => {
+    let list = subTab === 'most-sold'
+      ? [...products].filter(p => p.unitsSold > 0 || p.trending)
+      : [...products];
+
+    if (search.trim()) {
+      const q = search.toLowerCase();
+      list = list.filter(p =>
+        p.name.toLowerCase().includes(q) ||
+        (p.shopName ?? '').toLowerCase().includes(q) ||
+        p.category.toLowerCase().includes(q)
+      );
+    }
+
+    list.sort((a, b) => {
+      let diff = 0;
+      if (sortKey === 'unitsSold') diff = b.unitsSold - a.unitsSold;
+      else if (sortKey === 'revenue') diff = b.revenue - a.revenue;
+      else if (sortKey === 'name') diff = a.name.localeCompare(b.name);
+      else if (sortKey === 'stock') diff = b.stock - a.stock;
+      return sortAsc ? -diff : diff;
+    });
+
+    if (subTab === 'most-sold') list = list.slice(0, 50);
+    return list;
+  }, [products, subTab, search, sortKey, sortAsc]);
+
+  const trendingCount = products.filter(p => p.trending).length;
+  const totalSold = products.reduce((s, p) => s + p.unitsSold, 0);
+
+  const SortBtn = ({ col, label }: { col: SortKey; label: string }) => (
+    <button
+      onClick={() => cycleSort(col)}
+      className={`flex items-center gap-1 font-semibold transition-colors ${sortKey === col ? 'text-primary' : 'text-muted-foreground hover:text-foreground'}`}
+    >
+      {label}
+      <ArrowUpDown className={`w-3 h-3 ${sortKey === col ? 'opacity-100' : 'opacity-40'}`} />
+    </button>
+  );
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-bold flex items-center gap-2">
+            <Flame className="w-6 h-6 text-orange-500" /> Trending Manager
+          </h2>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Control which products appear in the "Trending in Your Area" section
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="neu-inset rounded-xl px-4 py-2 text-center">
+            <div className="text-xl font-bold text-orange-500">{trendingCount}</div>
+            <div className="text-xs text-muted-foreground">Trending now</div>
+          </div>
+          <div className="neu-inset rounded-xl px-4 py-2 text-center">
+            <div className="text-xl font-bold text-primary">{totalSold.toLocaleString()}</div>
+            <div className="text-xs text-muted-foreground">Total sold</div>
+          </div>
+          <Button onClick={() => void fetchProducts()} variant="outline" size="sm" className="rounded-xl shadow-none neu-card" disabled={loading}>
+            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+          </Button>
+        </div>
+      </div>
+
+      {/* Sub-tabs */}
+      <div className="flex gap-2 p-1 neu-inset rounded-xl w-fit">
+        {(['most-sold', 'all'] as const).map(tab => (
+          <button
+            key={tab}
+            onClick={() => { setSubTab(tab); setSearch(''); }}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              subTab === tab ? 'bg-primary text-primary-foreground neu-card shadow-sm' : 'text-muted-foreground hover:text-foreground'
+            }`}
+          >
+            {tab === 'most-sold' ? '🔥 Most Sold' : '📦 All Products'}
+          </button>
+        ))}
+      </div>
+
+      {/* Search */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+        <Input
+          placeholder="Search by product name, shop or category…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="pl-9 rounded-xl neu-inset border-none shadow-none"
+        />
+      </div>
+
+      {/* Table */}
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        </div>
+      ) : displayList.length === 0 ? (
+        <div className="text-center py-20 text-muted-foreground">
+          {search ? 'No products match your search.' : subTab === 'most-sold' ? 'No orders yet — all products will appear in the All Products tab.' : 'No products found.'}
+        </div>
+      ) : (
+        <div className="neu-card rounded-2xl overflow-hidden">
+          {/* Table header */}
+          <div className="hidden md:grid grid-cols-[2fr_1fr_1fr_1fr_1fr_auto] gap-4 px-5 py-3 border-b border-border bg-muted/30 text-xs">
+            <SortBtn col="name" label="Product" />
+            <span className="text-muted-foreground font-semibold">Status</span>
+            <SortBtn col="unitsSold" label="Units Sold" />
+            <SortBtn col="revenue" label="Revenue" />
+            <SortBtn col="stock" label="Stock" />
+            <span className="text-muted-foreground font-semibold">Trending</span>
+          </div>
+
+          <div className="divide-y divide-border">
+            {displayList.map((product, idx) => (
+              <div
+                key={product._id}
+                className={`flex flex-col md:grid md:grid-cols-[2fr_1fr_1fr_1fr_1fr_auto] gap-4 items-start md:items-center px-5 py-4 transition-colors hover:bg-muted/20 ${
+                  product.trending ? 'bg-orange-500/5 border-l-4 border-l-orange-400' : ''
+                }`}
+              >
+                {/* Product info */}
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="relative flex-shrink-0">
+                    {subTab === 'most-sold' && idx < 3 && (
+                      <span className={`absolute -top-2 -left-2 z-10 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold text-white ${
+                        idx === 0 ? 'bg-yellow-500' : idx === 1 ? 'bg-slate-400' : 'bg-amber-700'
+                      }`}>{idx + 1}</span>
+                    )}
+                    {product.images?.[0] ? (
+                      <img
+                        src={product.images[0]}
+                        alt={product.name}
+                        className="w-12 h-12 rounded-xl object-cover neu-inset"
+                      />
+                    ) : (
+                      <div className="w-12 h-12 rounded-xl neu-inset flex items-center justify-center">
+                        <Package className="w-5 h-5 text-muted-foreground" />
+                      </div>
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-semibold text-sm truncate">{product.name}</p>
+                    <p className="text-xs text-muted-foreground truncate">{product.shopName}</p>
+                    <p className="text-xs text-muted-foreground capitalize">{product.category}</p>
+                  </div>
+                </div>
+
+                {/* Status */}
+                <div>
+                  <span className={`text-xs px-2 py-1 rounded-full font-medium ${
+                    product.status === 'active' ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400' :
+                    product.status === 'inactive' ? 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400' :
+                    product.status === 'out_of_stock' ? 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400' :
+                    'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
+                  }`}>
+                    {product.status === 'out_of_stock' ? 'Out of Stock' : product.status}
+                  </span>
+                </div>
+
+                {/* Units sold */}
+                <div className="text-sm">
+                  <span className={`font-semibold ${product.unitsSold > 0 ? 'text-foreground' : 'text-muted-foreground'}`}>
+                    {product.unitsSold.toLocaleString()}
+                  </span>
+                  {product.unitsSold > 0 && (
+                    <TrendingUp className="inline w-3.5 h-3.5 ml-1 text-green-500" />
+                  )}
+                </div>
+
+                {/* Revenue */}
+                <div className="text-sm font-medium text-foreground">
+                  {product.revenue > 0 ? formatINR(product.revenue) : <span className="text-muted-foreground">—</span>}
+                </div>
+
+                {/* Stock */}
+                <div className={`text-sm font-medium ${product.stock === 0 ? 'text-red-500' : product.stock < 10 ? 'text-amber-700 dark:text-amber-400' : 'text-foreground'}`}>
+                  {product.stock}
+                </div>
+
+                {/* Trending toggle */}
+                <div className="flex items-center">
+                  <button
+                    onClick={() => void toggleTrending(product)}
+                    disabled={togglingId === product._id}
+                    title={product.trending ? 'Remove from Trending' : 'Add to Trending'}
+                    className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all border ${
+                      product.trending
+                        ? 'bg-orange-500 text-white border-orange-500 hover:bg-orange-600 shadow-md'
+                        : 'bg-muted/50 text-muted-foreground border-border hover:border-orange-400 hover:text-orange-500 neu-inset'
+                    } disabled:opacity-50`}
+                  >
+                    {togglingId === product._id ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Flame className={`w-3.5 h-3.5 ${product.trending ? 'text-white' : ''}`} />
+                    )}
+                    <span className="hidden sm:inline">{product.trending ? 'Trending' : 'Set Trending'}</span>
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="px-5 py-3 border-t border-border bg-muted/20 text-xs text-muted-foreground">
+            Showing {displayList.length} product{displayList.length !== 1 ? 's' : ''}
+            {subTab === 'most-sold' && products.filter(p => p.unitsSold > 0 || p.trending).length > 50 && ' (top 50 by units sold)'}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Delivery Charges Tab ─────────────────────────────────────────────────────
+
+interface DeliveryRule {
+  _id: string;
+  fromPincode: string;
+  toPincode: string;
+  baseCharge: number;
+  rainSurcharge: number;
+  label?: string;
+}
+
+interface DeliveryChargesApiResponse {
+  success: boolean;
+  rules: DeliveryRule[];
+  rainModeActive: boolean;
+}
+
+const EMPTY_RULE = { fromPincode: "", toPincode: "", baseCharge: 0, rainSurcharge: 0, label: "" };
+
+function DeliveryChargesTab() {
+  const [rules, setRules] = useState<DeliveryRule[]>([]);
+  const [rainModeActive, setRainModeActive] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [rainToggling, setRainToggling] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [form, setForm] = useState(EMPTY_RULE);
+  const [editForm, setEditForm] = useState(EMPTY_RULE);
+
+  const fetchAll = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.get<DeliveryChargesApiResponse>("/delivery/charges");
+      setRules(data.rules);
+      setRainModeActive(data.rainModeActive);
+    } catch {
+      toast.error("Failed to load delivery charges");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { fetchAll(); }, [fetchAll]);
+
+  const handleToggleRain = async () => {
+    setRainToggling(true);
+    try {
+      await api.post("/delivery/rain-mode", { active: !rainModeActive });
+      setRainModeActive(v => !v);
+      toast.success(rainModeActive ? "Rain mode disabled" : "Rain mode enabled — surcharge active");
+    } catch {
+      toast.error("Failed to update rain mode");
+    } finally {
+      setRainToggling(false);
+    }
+  };
+
+  const handleAddRule = async () => {
+    if (!form.fromPincode || !form.toPincode) {
+      toast.error("Both pincodes are required");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.post("/delivery/charges", {
+        fromPincode: form.fromPincode.trim(),
+        toPincode: form.toPincode.trim(),
+        baseCharge: Number(form.baseCharge),
+        rainSurcharge: Number(form.rainSurcharge),
+        label: form.label || null,
+      });
+      setForm(EMPTY_RULE);
+      setShowAddForm(false);
+      toast.success("Delivery rule added");
+      fetchAll();
+    } catch {
+      toast.error("Failed to add rule");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSaveEdit = async (id: string) => {
+    setSaving(true);
+    try {
+      await api.patch(`/delivery/charges/${id}`, {
+        fromPincode: editForm.fromPincode.trim(),
+        toPincode: editForm.toPincode.trim(),
+        baseCharge: Number(editForm.baseCharge),
+        rainSurcharge: Number(editForm.rainSurcharge),
+        label: editForm.label || null,
+      });
+      setEditingId(null);
+      toast.success("Rule updated");
+      fetchAll();
+    } catch {
+      toast.error("Failed to update rule");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteRule = async (id: string) => {
+    if (!confirm("Delete this delivery rule?")) return;
+    try {
+      await api.delete(`/delivery/charges/${id}`);
+      toast.success("Rule deleted");
+      fetchAll();
+    } catch {
+      toast.error("Failed to delete rule");
+    }
+  };
+
+  const startEdit = (rule: DeliveryRule) => {
+    setEditingId(rule._id);
+    setEditForm({
+      fromPincode: rule.fromPincode,
+      toPincode: rule.toPincode,
+      baseCharge: rule.baseCharge,
+      rainSurcharge: rule.rainSurcharge,
+      label: rule.label ?? "",
+    });
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold">Delivery Charges</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Manage cross-area delivery fees and rain surcharges
+          </p>
+        </div>
+        <Button onClick={() => { setShowAddForm(true); setForm(EMPTY_RULE); }} className="rounded-xl gap-2 neu-card shadow-none">
+          <Plus className="w-4 h-4" /> Add Rule
+        </Button>
+      </div>
+
+      {/* Rain Mode Toggle */}
+      <div className={`flex items-center justify-between p-4 rounded-2xl border-2 transition-all ${rainModeActive ? "border-blue-400 bg-blue-50 dark:bg-blue-900/20" : "border-border bg-card neu-inset"}`}>
+        <div className="flex items-center gap-3">
+          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${rainModeActive ? "bg-blue-500 text-white" : "bg-muted text-muted-foreground"}`}>
+            <span className="text-lg">🌧️</span>
+          </div>
+          <div>
+            <div className="font-bold flex items-center gap-2">
+              Rain Mode
+              {rainModeActive && (
+                <span className="text-xs bg-blue-500 text-white px-2 py-0.5 rounded-full">ACTIVE</span>
+              )}
+            </div>
+            <div className="text-xs text-muted-foreground mt-0.5">
+              When active, rain surcharge is added on top of base delivery charges
+            </div>
+          </div>
+        </div>
+        <Button
+          onClick={handleToggleRain}
+          disabled={rainToggling}
+          variant={rainModeActive ? "default" : "outline"}
+          className="rounded-xl min-w-[100px]"
+        >
+          {rainToggling ? <Loader2 className="w-4 h-4 animate-spin" /> : rainModeActive ? "Disable" : "Enable"}
+        </Button>
+      </div>
+
+      {/* Add Rule Form */}
+      {showAddForm && (
+        <div className="bg-card border border-border rounded-2xl p-5 neu-card space-y-4">
+          <h3 className="font-bold text-base">New Delivery Rule</h3>
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs text-muted-foreground font-medium mb-1 block">From Pincode (shop area)</label>
+              <Input
+                value={form.fromPincode}
+                onChange={e => setForm(f => ({ ...f, fromPincode: e.target.value }))}
+                placeholder="e.g. 733101"
+                className="rounded-xl font-mono"
+                maxLength={6}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground font-medium mb-1 block">To Pincode (customer area)</label>
+              <Input
+                value={form.toPincode}
+                onChange={e => setForm(f => ({ ...f, toPincode: e.target.value }))}
+                placeholder="e.g. 733103"
+                className="rounded-xl font-mono"
+                maxLength={6}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground font-medium mb-1 block">Base Charge (₹)</label>
+              <Input
+                type="number"
+                value={form.baseCharge}
+                onChange={e => setForm(f => ({ ...f, baseCharge: Number(e.target.value) }))}
+                placeholder="0"
+                className="rounded-xl"
+                min={0}
+              />
+            </div>
+            <div>
+              <label className="text-xs text-muted-foreground font-medium mb-1 block">🌧️ Rain Surcharge (₹)</label>
+              <Input
+                type="number"
+                value={form.rainSurcharge}
+                onChange={e => setForm(f => ({ ...f, rainSurcharge: Number(e.target.value) }))}
+                placeholder="0"
+                className="rounded-xl"
+                min={0}
+              />
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground font-medium mb-1 block">Label (optional)</label>
+            <Input
+              value={form.label}
+              onChange={e => setForm(f => ({ ...f, label: e.target.value }))}
+              placeholder="e.g. Balurghat cross-town"
+              className="rounded-xl"
+            />
+          </div>
+          <div className="flex gap-2 justify-end">
+            <Button variant="outline" onClick={() => setShowAddForm(false)} className="rounded-xl">Cancel</Button>
+            <Button onClick={handleAddRule} disabled={saving} className="rounded-xl neu-card shadow-none">
+              {saving ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : null}
+              Save Rule
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {/* Rules Table */}
+      {loading ? (
+        <div className="flex items-center justify-center py-16 text-muted-foreground">
+          <Loader2 className="w-6 h-6 animate-spin mr-2" /> Loading rules…
+        </div>
+      ) : rules.length === 0 ? (
+        <div className="text-center py-16 text-muted-foreground">
+          <Package className="w-12 h-12 mx-auto mb-3 opacity-30" />
+          <p className="font-medium">No delivery rules yet</p>
+          <p className="text-sm mt-1">Click "Add Rule" to set cross-area delivery charges</p>
+        </div>
+      ) : (
+        <div className="bg-card rounded-2xl overflow-hidden neu-card">
+          <div className="grid grid-cols-[1fr_1fr_80px_80px_1fr_100px] text-xs font-semibold text-muted-foreground uppercase tracking-wide bg-muted/40 px-5 py-3 gap-3">
+            <div>From Pincode</div>
+            <div>To Pincode</div>
+            <div>Base (₹)</div>
+            <div>Rain (₹)</div>
+            <div>Label</div>
+            <div className="text-right">Actions</div>
+          </div>
+
+          {rules.map((rule, idx) => (
+            <div
+              key={rule._id}
+              className={`grid grid-cols-[1fr_1fr_80px_80px_1fr_100px] items-center gap-3 px-5 py-4 ${idx < rules.length - 1 ? "border-b border-border" : ""}`}
+            >
+              {editingId === rule._id ? (
+                <>
+                  <Input value={editForm.fromPincode} onChange={e => setEditForm(f => ({ ...f, fromPincode: e.target.value }))} className="rounded-lg font-mono text-sm h-8" maxLength={6} />
+                  <Input value={editForm.toPincode} onChange={e => setEditForm(f => ({ ...f, toPincode: e.target.value }))} className="rounded-lg font-mono text-sm h-8" maxLength={6} />
+                  <Input type="number" value={editForm.baseCharge} onChange={e => setEditForm(f => ({ ...f, baseCharge: Number(e.target.value) }))} className="rounded-lg text-sm h-8" min={0} />
+                  <Input type="number" value={editForm.rainSurcharge} onChange={e => setEditForm(f => ({ ...f, rainSurcharge: Number(e.target.value) }))} className="rounded-lg text-sm h-8" min={0} />
+                  <Input value={editForm.label} onChange={e => setEditForm(f => ({ ...f, label: e.target.value }))} className="rounded-lg text-sm h-8" placeholder="Label" />
+                  <div className="flex gap-1 justify-end">
+                    <button onClick={() => handleSaveEdit(rule._id)} disabled={saving} className="text-xs bg-primary text-primary-foreground px-2 py-1 rounded-lg hover:opacity-90">
+                      {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : "Save"}
+                    </button>
+                    <button onClick={() => setEditingId(null)} className="text-xs bg-muted text-foreground px-2 py-1 rounded-lg hover:opacity-90">
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="font-mono font-bold text-sm">{rule.fromPincode}</div>
+                  <div className="font-mono font-bold text-sm">{rule.toPincode}</div>
+                  <div className="font-semibold text-sm">₹{rule.baseCharge}</div>
+                  <div className={`font-semibold text-sm ${rule.rainSurcharge > 0 ? "text-blue-600 dark:text-blue-400" : "text-muted-foreground"}`}>
+                    {rule.rainSurcharge > 0 ? `₹${rule.rainSurcharge}` : "—"}
+                  </div>
+                  <div className="text-sm text-muted-foreground truncate">{rule.label || "—"}</div>
+                  <div className="flex gap-1 justify-end">
+                    <button onClick={() => startEdit(rule)} className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground">
+                      <Edit2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button onClick={() => handleDeleteRule(rule._id)} className="p-1.5 rounded-lg hover:bg-destructive/10 transition-colors text-muted-foreground hover:text-destructive">
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          ))}
+
+          <div className="px-5 py-3 border-t border-border bg-muted/20 text-xs text-muted-foreground">
+            {rules.length} rule{rules.length !== 1 ? "s" : ""} · Rain mode is {rainModeActive ? "ON 🌧️" : "OFF"}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Homepage Sections Tab ────────────────────────────────────────────────────
+
+interface HomepageSectionRow {
+  _id: string;
+  id: string;
+  title: string;
+  type: string;
+  enabled: boolean;
+  sortOrder: number;
+  config: {
+    categorySlug?: string;
+    productIds?: string[];
+    limit?: number;
+    layout?: string;
+  };
+}
+
+interface ProductSearchResult {
+  _id: string;
+  id: string;
+  name: string;
+  category?: string;
+}
+
+const SECTION_TYPES = [
+  { value: "trending", label: "Trending Products", icon: "🔥" },
+  { value: "new_arrivals", label: "New Arrivals", icon: "✨" },
+  { value: "category", label: "By Category", icon: "🗂️" },
+  { value: "manual", label: "Manual / Custom", icon: "✋" },
+];
+
+const LAYOUT_OPTIONS = [
+  { value: "scroll", label: "Horizontal Scroll" },
+  { value: "grid", label: "Grid" },
+];
+
+interface ApiCategory { _id: string; slug: string; name: string; emoji?: string; }
+
+function HomepageSectionsTab() {
+  const [sections, setSections] = useState<HomepageSectionRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editingSection, setEditingSection] = useState<HomepageSectionRow | null>(null);
+  const [apiCategories, setApiCategories] = useState<ApiCategory[]>([]);
+
+  const [formTitle, setFormTitle] = useState("");
+  const [formType, setFormType] = useState("trending");
+  const [formLayout, setFormLayout] = useState("scroll");
+  const [formLimit, setFormLimit] = useState(10);
+  const [formCategorySlug, setFormCategorySlug] = useState("");
+  const [formProductSearch, setFormProductSearch] = useState("");
+  const [formProductIds, setFormProductIds] = useState<string[]>([]);
+  const [formProductNames, setFormProductNames] = useState<Record<string, string>>({});
+  const [productSearchResults, setProductSearchResults] = useState<ProductSearchResult[]>([]);
+  const [productSearchLoading, setProductSearchLoading] = useState(false);
+  // Shop-browser for manual picker
+  const [pickerShops, setPickerShops] = useState<{ _id: string; shopName: string }[]>([]);
+  const [pickerSelectedShopId, setPickerSelectedShopId] = useState<string>("");
+  const [pickerShopProducts, setPickerShopProducts] = useState<ProductSearchResult[]>([]);
+  const [pickerShopLoading, setPickerShopLoading] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.get<{ success: boolean; sections: HomepageSectionRow[] }>('/homepage-sections/admin')
+      .then(d => {
+        if (d && Array.isArray(d.sections)) {
+          setSections(d.sections);
+        } else {
+          setSections([]);
+        }
+      })
+      .catch((err) => {
+        console.warn("[HomepageSections] /admin fetch error, trying fallback...", err);
+        return api.get<{ success: boolean; sections: HomepageSectionRow[] }>('/homepage-sections')
+          .then(d => {
+            if (d && Array.isArray(d.sections)) {
+              setSections(d.sections);
+            }
+          })
+          .catch((err2) => {
+            console.error("[HomepageSections] failed to load:", err2);
+            toast.error("Failed to load sections");
+          });
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    api.get<{ success: boolean; categories: ApiCategory[] }>('/categories')
+      .then(d => setApiCategories(d.categories ?? []))
+      .catch(() => {});
+  }, []);
+
+  // Load shops once for the manual picker
+  useEffect(() => {
+    api.get<{ success: boolean; shops: { _id: string; shopName: string }[] }>('/shops?status=approved&limit=200')
+      .then(d => setPickerShops(d.shops ?? []))
+      .catch(() => {});
+  }, []);
+
+  function resetPickerState() {
+    setPickerSelectedShopId("");
+    setPickerShopProducts([]);
+    setFormProductSearch("");
+    setProductSearchResults([]);
+  }
+
+  function openCreate() {
+    setEditingSection(null);
+    setFormTitle(""); setFormType("trending"); setFormLayout("scroll");
+    setFormLimit(10); setFormCategorySlug(""); setFormProductIds([]);
+    setFormProductNames({});
+    resetPickerState();
+    setShowForm(true);
+  }
+
+  function openEdit(s: HomepageSectionRow) {
+    setEditingSection(s);
+    setFormTitle(s.title); setFormType(s.type);
+    setFormLayout(s.config.layout ?? "scroll");
+    setFormLimit(s.config.limit ?? 10);
+    setFormCategorySlug(s.config.categorySlug ?? "");
+    const ids = s.config.productIds ?? [];
+    setFormProductIds(ids);
+    // Load names for existing IDs so chips show names not UUIDs
+    if (ids.length > 0) {
+      api.get<{ success: boolean; products: ProductSearchResult[] }>(`/products?ids=${ids.join(',')}&limit=40`)
+        .then(d => {
+          const names: Record<string, string> = {};
+          for (const p of d.products ?? []) {
+            const pid = p.id || p._id;
+            names[pid] = p.name;
+          }
+          setFormProductNames(names);
+        })
+        .catch(() => {});
+    } else {
+      setFormProductNames({});
+    }
+    resetPickerState();
+    setShowForm(true);
+  }
+
+  async function handleSave() {
+    if (!formTitle.trim()) { toast.error("Title is required"); return; }
+    if (formType === "category" && !formCategorySlug.trim()) {
+      toast.error("Please select a category");
+      return;
+    }
+    if (formType === "manual" && formProductIds.length === 0) {
+      toast.error("Please select at least one product");
+      return;
+    }
+
+    setSaving("form");
+    const config: HomepageSectionRow["config"] = { limit: formLimit, layout: formLayout };
+    if (formType === "category") config.categorySlug = formCategorySlug;
+    if (formType === "manual") config.productIds = formProductIds;
+
+    try {
+      if (editingSection) {
+        const secId = editingSection.id || editingSection._id;
+        await api.patch(`/homepage-sections/${secId}`, { title: formTitle, type: formType, config });
+        toast.success("Section updated");
+      } else {
+        const maxOrder = sections.length > 0 ? Math.max(...sections.map(s => Number(s.sortOrder) || 0)) + 1 : 0;
+        await api.post('/homepage-sections', { title: formTitle, type: formType, config, sortOrder: maxOrder });
+        toast.success("Section created");
+      }
+      setShowForm(false);
+      load();
+    } catch (err: any) {
+      console.error("Failed to save section:", err);
+      toast.error(err?.message || "Failed to save section");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function handleToggle(s: HomepageSectionRow) {
+    const secId = s.id || s._id;
+    setSaving(secId);
+    try {
+      await api.patch(`/homepage-sections/${secId}`, { enabled: !s.enabled });
+      setSections(prev => prev.map(x => (x.id === secId || x._id === secId) ? { ...x, enabled: !x.enabled } : x));
+    } catch {
+      toast.error("Failed to toggle section");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function handleDelete(s: HomepageSectionRow) {
+    if (!confirm(`Delete "${s.title}"? This cannot be undone.`)) return;
+    const secId = s.id || s._id;
+    setSaving(secId + "-del");
+    try {
+      await api.delete(`/homepage-sections/${secId}`);
+      toast.success("Section deleted");
+      setSections(prev => prev.filter(x => x.id !== secId && x._id !== secId));
+    } catch {
+      toast.error("Failed to delete section");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function handleMove(s: HomepageSectionRow, dir: -1 | 1) {
+    const sorted = [...sections].sort((a, b) => a.sortOrder - b.sortOrder);
+    const secId = s.id || s._id;
+    const idx = sorted.findIndex(x => (x.id === secId || x._id === secId));
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= sorted.length) return;
+    const swap = sorted[swapIdx]!;
+    const swapId = swap.id || swap._id;
+    const newOrder = [
+      { id: secId, sortOrder: swap.sortOrder },
+      { id: swapId, sortOrder: s.sortOrder },
+    ];
+    try {
+      await api.patch('/homepage-sections/reorder', { order: newOrder });
+      setSections(prev => prev.map(x => {
+        const xId = x.id || x._id;
+        if (xId === secId) return { ...x, sortOrder: swap.sortOrder };
+        if (xId === swapId) return { ...x, sortOrder: s.sortOrder };
+        return x;
+      }));
+    } catch {
+      toast.error("Failed to reorder");
+    }
+  }
+
+  // Global search (across all shops)
+  useEffect(() => {
+    if (!formProductSearch.trim() || formType !== "manual") { setProductSearchResults([]); return; }
+    const t = setTimeout(() => {
+      setProductSearchLoading(true);
+      api.get<{ success: boolean; products: ProductSearchResult[] }>(`/products?search=${encodeURIComponent(formProductSearch)}&limit=20`)
+        .then(d => setProductSearchResults(d.products ?? []))
+        .catch(() => {})
+        .finally(() => setProductSearchLoading(false));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [formProductSearch, formType]);
+
+  // Load products for the selected shop in the picker
+  useEffect(() => {
+    if (!pickerSelectedShopId || formType !== "manual") { setPickerShopProducts([]); return; }
+    setPickerShopLoading(true);
+    api.get<{ success: boolean; products: ProductSearchResult[] }>(`/products?shopId=${pickerSelectedShopId}&status=all&limit=100`)
+      .then(d => setPickerShopProducts(d.products ?? []))
+      .catch(() => {})
+      .finally(() => setPickerShopLoading(false));
+  }, [pickerSelectedShopId, formType]);
+
+  function togglePickerProduct(p: ProductSearchResult) {
+    const pid = p.id || p._id;
+    if (formProductIds.includes(pid)) {
+      setFormProductIds(prev => prev.filter(x => x !== pid));
+    } else {
+      setFormProductIds(prev => [...prev, pid]);
+      setFormProductNames(prev => ({ ...prev, [pid]: p.name }));
+    }
+  }
+
+  const sorted = [...sections].sort((a, b) => a.sortOrder - b.sortOrder);
+
+  const typeLabel = (type: string) => SECTION_TYPES.find(t => t.value === type)?.label ?? type;
+  const typeIcon = (type: string) => SECTION_TYPES.find(t => t.value === type)?.icon ?? "📦";
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold">Home Page Sections</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">Manage what product sections appear on the customer home page</p>
+        </div>
+        <Button onClick={openCreate} className="rounded-xl gap-2">
+          <Plus className="w-4 h-4" /> Add Section
+        </Button>
+      </div>
+
+      {/* Section List */}
+      {loading ? (
+        <div className="space-y-3">
+          {[1,2,3].map(i => <div key={i} className="h-20 rounded-2xl bg-muted animate-pulse" />)}
+        </div>
+      ) : sorted.length === 0 ? (
+        <div className="neu-card rounded-2xl p-12 text-center">
+          <Layers className="w-10 h-10 text-muted-foreground mx-auto mb-3 opacity-40" />
+          <p className="font-semibold text-muted-foreground">No sections yet</p>
+          <p className="text-xs text-muted-foreground mt-1">Click "Add Section" to create your first home page section</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {sorted.map((s, idx) => {
+            const secId = s.id || s._id;
+            return (
+              <div key={secId} className={`neu-card rounded-2xl px-5 py-4 flex items-center gap-4 transition-opacity ${!s.enabled ? "opacity-50" : ""}`}>
+                {/* Reorder */}
+                <div className="flex flex-col gap-0.5 shrink-0">
+                  <button onClick={() => handleMove(s, -1)} disabled={idx === 0} className="p-1 rounded text-muted-foreground hover:text-foreground disabled:opacity-20 disabled:cursor-not-allowed transition-colors">
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  </button>
+                  <button onClick={() => handleMove(s, 1)} disabled={idx === sorted.length - 1} className="p-1 rounded text-muted-foreground hover:text-foreground disabled:opacity-20 disabled:cursor-not-allowed transition-colors">
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+
+                {/* Icon */}
+                <div className="w-10 h-10 rounded-xl bg-primary/10 flex items-center justify-center text-xl shrink-0">
+                  {typeIcon(s.type)}
+                </div>
+
+                {/* Info */}
+                <div className="flex-1 min-w-0">
+                  <div className="font-bold text-sm truncate">{s.title}</div>
+                  <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                    <span className="text-xs bg-muted px-2 py-0.5 rounded-full text-muted-foreground font-medium">{typeLabel(s.type)}</span>
+                    {s.type === "category" && s.config.categorySlug && (
+                      <span className="text-xs text-primary font-medium">#{s.config.categorySlug}</span>
+                    )}
+                    {s.type === "manual" && (
+                      <span className="text-xs text-primary font-medium">{(s.config.productIds ?? []).length} products</span>
+                    )}
+                    <span className="text-xs text-muted-foreground">{s.config.layout ?? "scroll"} · limit {s.config.limit ?? 10}</span>
+                  </div>
+                </div>
+
+                {/* Toggle */}
+                <button
+                  onClick={() => handleToggle(s)}
+                  disabled={saving === secId}
+                  className="shrink-0 transition-colors"
+                  title={s.enabled ? "Visible on home page" : "Hidden from home page"}
+                >
+                  {saving === secId ? (
+                    <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                  ) : s.enabled ? (
+                    <ToggleRight className="w-8 h-8 text-primary" />
+                  ) : (
+                    <ToggleLeft className="w-8 h-8 text-muted-foreground" />
+                  )}
+                </button>
+
+                {/* Actions */}
+                <div className="flex gap-1 shrink-0">
+                  <button onClick={() => openEdit(s)} className="p-2 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground">
+                    <Edit2 className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => handleDelete(s)} disabled={saving === secId + "-del"} className="p-2 rounded-lg hover:bg-destructive/10 transition-colors text-muted-foreground hover:text-destructive">
+                    {saving === secId + "-del" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Create / Edit Modal */}
+      {showForm && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-4" onClick={() => setShowForm(false)}>
+          <div className="bg-card rounded-3xl p-6 w-full max-w-lg space-y-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-lg">{editingSection ? "Edit Section" : "New Section"}</h3>
+              <button onClick={() => setShowForm(false)} className="p-2 rounded-lg hover:bg-muted text-muted-foreground"><X className="w-4 h-4" /></button>
+            </div>
+
+            {/* Title */}
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">Section Title</label>
+              <Input value={formTitle} onChange={e => setFormTitle(e.target.value)} placeholder="e.g. Your Daily Needs" className="rounded-xl" />
+            </div>
+
+            {/* Type */}
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">Section Type</label>
+              <div className="grid grid-cols-2 gap-2">
+                {SECTION_TYPES.map(t => (
+                  <button
+                    key={t.value}
+                    onClick={() => setFormType(t.value)}
+                    className={`p-3 rounded-xl border-2 text-left transition-all ${formType === t.value ? "border-primary bg-primary/5" : "border-transparent bg-muted hover:border-muted-foreground/30"}`}
+                  >
+                    <div className="text-lg mb-0.5">{t.icon}</div>
+                    <div className="text-xs font-semibold">{t.label}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Category picker */}
+            {formType === "category" && (
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">Category</label>
+                <select
+                  value={formCategorySlug}
+                  onChange={e => setFormCategorySlug(e.target.value)}
+                  className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm"
+                >
+                  <option value="">— Pick a category —</option>
+                  {apiCategories.map(c => {
+                    const cId = c._id || (c as any).id || c.slug;
+                    return (
+                      <option key={cId} value={c.slug}>
+                        {c.emoji ? `${c.emoji} ` : ""}{c.name}
+                      </option>
+                    );
+                  })}
+                </select>
+                {apiCategories.length === 0 && (
+                  <p className="text-xs text-muted-foreground mt-1">Loading categories…</p>
+                )}
+              </div>
+            )}
+
+            {/* Manual product picker */}
+            {formType === "manual" && (
+              <div className="space-y-3">
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide block">
+                  Select Products <span className="text-primary font-bold">({formProductIds.length} selected)</span>
+                </label>
+
+                {/* ── Step 1: Pick a shop to browse ── */}
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2">Browse by shop — pick one to see its products:</p>
+                  <div className="flex flex-wrap gap-2">
+                    {pickerShops.map(sh => {
+                      const shId = sh._id || (sh as any).id;
+                      return (
+                        <button
+                          key={shId}
+                          onClick={() => setPickerSelectedShopId(prev => prev === shId ? "" : shId)}
+                          className={`text-xs px-3 py-1.5 rounded-full border font-medium transition-all ${
+                            pickerSelectedShopId === shId
+                              ? "border-primary bg-primary/10 text-primary"
+                              : "border-border bg-muted text-muted-foreground hover:border-primary/50"
+                          }`}
+                        >
+                          {sh.shopName}
+                        </button>
+                      );
+                    })}
+                    {pickerShops.length === 0 && <p className="text-xs text-muted-foreground">Loading shops…</p>}
+                  </div>
+                </div>
+
+                {/* ── Step 2: Products from selected shop ── */}
+                {pickerSelectedShopId && (
+                  <div className="neu-inset rounded-xl overflow-hidden">
+                    {pickerShopLoading ? (
+                      <div className="p-4 text-center text-xs text-muted-foreground">Loading products…</div>
+                    ) : pickerShopProducts.length === 0 ? (
+                      <div className="p-4 text-center text-xs text-muted-foreground">No active products in this shop</div>
+                    ) : (
+                      <div className="max-h-52 overflow-y-auto divide-y divide-border">
+                        {pickerShopProducts.map(p => {
+                          const pid = p.id || p._id;
+                          const selected = formProductIds.includes(pid);
+                          return (
+                            <button
+                              key={pid}
+                              onClick={() => togglePickerProduct(p)}
+                              className={`w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors ${selected ? "bg-primary/5" : "hover:bg-muted/50"}`}
+                            >
+                              <div className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors ${selected ? "border-primary bg-primary" : "border-muted-foreground/40"}`}>
+                                {selected && <span className="text-[10px] text-primary-foreground font-bold">✓</span>}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-sm font-medium truncate">{p.name}</p>
+                                {p.category && <p className="text-[11px] text-muted-foreground capitalize">{p.category}</p>}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* ── OR: Global search ── */}
+                <div>
+                  <p className="text-xs text-muted-foreground mb-1.5">Or search across all shops:</p>
+                  <Input
+                    value={formProductSearch}
+                    onChange={e => setFormProductSearch(e.target.value)}
+                    placeholder="Type product name…"
+                    className="rounded-xl"
+                  />
+                  {productSearchLoading && <p className="text-xs text-muted-foreground mt-1">Searching…</p>}
+                  {productSearchResults.length > 0 && (
+                    <div className="neu-inset rounded-xl divide-y divide-border max-h-40 overflow-y-auto mt-1">
+                      {productSearchResults.map(p => {
+                        const pid = p.id || p._id;
+                        return (
+                          <button
+                            key={pid}
+                            onClick={() => { togglePickerProduct(p); setFormProductSearch(""); setProductSearchResults([]); }}
+                            className={`w-full flex items-center gap-3 px-3 py-2 transition-colors text-left ${formProductIds.includes(pid) ? "bg-primary/5" : "hover:bg-muted/50"}`}
+                          >
+                            <div className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${formProductIds.includes(pid) ? "border-primary bg-primary" : "border-muted-foreground/40"}`}>
+                              {formProductIds.includes(pid) && <span className="text-[10px] text-primary-foreground font-bold">✓</span>}
+                            </div>
+                            <span className="text-sm font-medium truncate">{p.name}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Selected chips with real names ── */}
+                {formProductIds.length > 0 && (
+                  <div>
+                    <p className="text-xs font-semibold text-muted-foreground mb-1.5">Selected ({formProductIds.length}):</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {formProductIds.map(pid => (
+                        <span key={pid} className="flex items-center gap-1 text-xs bg-primary/10 text-primary px-2.5 py-1 rounded-full font-medium max-w-[180px]">
+                          <span className="truncate">{formProductNames[pid] ?? pid.slice(0, 8) + "…"}</span>
+                          <button onClick={() => setFormProductIds(prev => prev.filter(x => x !== pid))} className="shrink-0">
+                            <X className="w-3 h-3" />
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Layout & Limit */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">Display Layout</label>
+                <select
+                  value={formLayout}
+                  onChange={e => setFormLayout(e.target.value)}
+                  className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm"
+                >
+                  {LAYOUT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">Max Products</label>
+                <Input
+                  type="number" min={1} max={40} value={formLimit}
+                  onChange={e => setFormLimit(Number(e.target.value))}
+                  className="rounded-xl"
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <Button onClick={handleSave} disabled={saving === "form"} className="flex-1 rounded-xl">
+                {saving === "form" ? <Loader2 className="w-4 h-4 animate-spin" /> : editingSection ? "Save Changes" : "Create Section"}
+              </Button>
+              <Button variant="outline" onClick={() => setShowForm(false)} className="rounded-xl">Cancel</Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// BUCKETS TAB — Admin-curated highlighted bundles (home page + addon upsell)
+// ============================================================================
+
+interface BucketRow {
+  _id: string;
+  id: string;
+  title: string;
+  subtitle: string;
+  badgeText: string;
+  accentColor: string;
+  comboPrice?: number | null;
+  maxQtyPerCart?: number | null;
+  productIds: string[];
+  showOnHomepage: boolean;
+  showAsAddon: boolean;
+  isActive: boolean;
+  sortOrder: number;
+}
+
+const ACCENT_PRESETS = ["#FF6B35", "#E11D48", "#7C3AED", "#0EA5E9", "#16A34A", "#F59E0B"];
+
+function BucketsTab() {
+  const [rows, setRows] = useState<BucketRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState<BucketRow | null>(null);
+
+  const [formTitle, setFormTitle] = useState("");
+  const [formSubtitle, setFormSubtitle] = useState("");
+  const [formBadgeText, setFormBadgeText] = useState("🔥 Hot Pick");
+  const [formAccentColor, setFormAccentColor] = useState(ACCENT_PRESETS[0]!);
+  const [formShowOnHomepage, setFormShowOnHomepage] = useState(true);
+  const [formShowAsAddon, setFormShowAsAddon] = useState(true);
+  const [formComboPrice, setFormComboPrice] = useState<string>("");
+  const [formMaxQtyPerCart, setFormMaxQtyPerCart] = useState<string>("");
+  const [formProductIds, setFormProductIds] = useState<string[]>([]);
+  const [formProductNames, setFormProductNames] = useState<Record<string, string>>({});
+  const [formProductSearch, setFormProductSearch] = useState("");
+  const [productSearchResults, setProductSearchResults] = useState<ProductSearchResult[]>([]);
+  const [productSearchLoading, setProductSearchLoading] = useState(false);
+  const [pickerShops, setPickerShops] = useState<{ _id: string; shopName: string }[]>([]);
+  const [pickerSelectedShopId, setPickerSelectedShopId] = useState<string>("");
+  const [pickerShopProducts, setPickerShopProducts] = useState<ProductSearchResult[]>([]);
+  const [pickerShopLoading, setPickerShopLoading] = useState(false);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.get<{ success: boolean; buckets: BucketRow[] }>('/buckets/admin')
+      .then(d => setRows(d.buckets ?? []))
+      .catch(() => toast.error("Failed to load buckets"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    api.get<{ success: boolean; shops: { _id: string; shopName: string }[] }>('/shops?status=approved&limit=200')
+      .then(d => setPickerShops(d.shops ?? []))
+      .catch(() => {});
+  }, []);
+
+  function resetPickerState() {
+    setPickerSelectedShopId("");
+    setPickerShopProducts([]);
+    setFormProductSearch("");
+    setProductSearchResults([]);
+  }
+
+  function openCreate() {
+    setEditing(null);
+    setFormTitle(""); setFormSubtitle(""); setFormBadgeText("🔥 Hot Pick");
+    setFormAccentColor(ACCENT_PRESETS[0]!);
+    setFormShowOnHomepage(true); setFormShowAsAddon(true);
+    setFormComboPrice(""); setFormMaxQtyPerCart("");
+    setFormProductIds([]); setFormProductNames({});
+    resetPickerState();
+    setShowForm(true);
+  }
+
+  function openEdit(b: BucketRow) {
+    setEditing(b);
+    setFormTitle(b.title); setFormSubtitle(b.subtitle ?? "");
+    setFormBadgeText(b.badgeText); setFormAccentColor(b.accentColor);
+    setFormShowOnHomepage(b.showOnHomepage); setFormShowAsAddon(b.showAsAddon);
+    setFormComboPrice(b.comboPrice != null ? String(b.comboPrice) : "");
+    setFormMaxQtyPerCart(b.maxQtyPerCart != null ? String(b.maxQtyPerCart) : "");
+    const ids = b.productIds ?? [];
+    setFormProductIds(ids);
+    if (ids.length > 0) {
+      api.get<{ success: boolean; products: ProductSearchResult[] }>(`/products?ids=${ids.join(',')}&limit=40`)
+        .then(d => {
+          const names: Record<string, string> = {};
+          for (const p of d.products ?? []) names[p._id] = p.name;
+          setFormProductNames(names);
+        })
+        .catch(() => {});
+    } else {
+      setFormProductNames({});
+    }
+    resetPickerState();
+    setShowForm(true);
+  }
+
+  async function handleSave() {
+    if (!formTitle.trim()) { toast.error("Title is required"); return; }
+    if (formProductIds.length === 0) { toast.error("Select at least one product"); return; }
+    setSaving("form");
+    const comboPriceNum = formComboPrice.trim() !== "" ? parseInt(formComboPrice, 10) : null;
+    const maxQtyNum = formMaxQtyPerCart.trim() !== "" ? parseInt(formMaxQtyPerCart, 10) : null;
+    const payload = {
+      title: formTitle,
+      subtitle: formSubtitle,
+      badgeText: formBadgeText,
+      accentColor: formAccentColor,
+      showOnHomepage: formShowOnHomepage,
+      showAsAddon: formShowAsAddon,
+      comboPrice: !isNaN(comboPriceNum as number) ? comboPriceNum : null,
+      maxQtyPerCart: maxQtyNum != null && !isNaN(maxQtyNum) && maxQtyNum > 0 ? maxQtyNum : null,
+      productIds: formProductIds,
+    };
+    try {
+      if (editing) {
+        await api.patch(`/buckets/${editing._id}`, payload);
+        toast.success("Bucket updated");
+      } else {
+        const maxOrder = rows.length > 0 ? Math.max(...rows.map(r => r.sortOrder)) + 1 : 0;
+        await api.post('/buckets', { ...payload, sortOrder: maxOrder });
+        toast.success("Bucket created");
+      }
+      setShowForm(false);
+      load();
+    } catch {
+      toast.error("Failed to save bucket");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function handleToggleActive(b: BucketRow) {
+    setSaving(b._id);
+    try {
+      await api.patch(`/buckets/${b._id}`, { isActive: !b.isActive });
+      setRows(prev => prev.map(x => x._id === b._id ? { ...x, isActive: !x.isActive } : x));
+    } catch {
+      toast.error("Failed to toggle bucket");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function handleDelete(b: BucketRow) {
+    if (!confirm(`Delete "${b.title}"? This cannot be undone.`)) return;
+    setSaving(b._id + "-del");
+    try {
+      await api.delete(`/buckets/${b._id}`);
+      toast.success("Bucket deleted");
+      setRows(prev => prev.filter(x => x._id !== b._id));
+    } catch {
+      toast.error("Failed to delete bucket");
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  async function handleMove(b: BucketRow, dir: -1 | 1) {
+    const sorted = [...rows].sort((a, b2) => a.sortOrder - b2.sortOrder);
+    const idx = sorted.findIndex(x => x._id === b._id);
+    const swapIdx = idx + dir;
+    if (swapIdx < 0 || swapIdx >= sorted.length) return;
+    const swap = sorted[swapIdx]!;
+    const newOrder = [
+      { id: b.id, sortOrder: swap.sortOrder },
+      { id: swap.id, sortOrder: b.sortOrder },
+    ];
+    try {
+      await api.patch('/buckets/reorder', { order: newOrder });
+      setRows(prev => prev.map(x => {
+        if (x._id === b._id) return { ...x, sortOrder: swap.sortOrder };
+        if (x._id === swap._id) return { ...x, sortOrder: b.sortOrder };
+        return x;
+      }));
+    } catch {
+      toast.error("Failed to reorder");
+    }
+  }
+
+  useEffect(() => {
+    if (!formProductSearch.trim()) { setProductSearchResults([]); return; }
+    const t = setTimeout(() => {
+      setProductSearchLoading(true);
+      api.get<{ success: boolean; products: ProductSearchResult[] }>(`/products?search=${encodeURIComponent(formProductSearch)}&limit=20`)
+        .then(d => setProductSearchResults(d.products ?? []))
+        .catch(() => {})
+        .finally(() => setProductSearchLoading(false));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [formProductSearch]);
+
+  useEffect(() => {
+    if (!pickerSelectedShopId) { setPickerShopProducts([]); return; }
+    setPickerShopLoading(true);
+    api.get<{ success: boolean; products: ProductSearchResult[] }>(`/products?shopId=${pickerSelectedShopId}&status=all&limit=100`)
+      .then(d => setPickerShopProducts(d.products ?? []))
+      .catch(() => {})
+      .finally(() => setPickerShopLoading(false));
+  }, [pickerSelectedShopId]);
+
+  function toggleProduct(p: ProductSearchResult) {
+    if (formProductIds.includes(p._id)) {
+      setFormProductIds(prev => prev.filter(x => x !== p._id));
+    } else {
+      setFormProductIds(prev => [...prev, p._id]);
+      setFormProductNames(prev => ({ ...prev, [p._id]: p.name }));
+    }
+  }
+
+  const sorted = [...rows].sort((a, b) => a.sortOrder - b.sortOrder);
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-xl font-bold">Bucket Packages</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Highlighted product bundles — shown at the top of the home page and suggested as add-ons in the cart
+          </p>
+        </div>
+        <Button onClick={openCreate} className="rounded-xl gap-2">
+          <Plus className="w-4 h-4" /> Add Bucket
+        </Button>
+      </div>
+
+      {loading ? (
+        <div className="space-y-3">
+          {[1, 2].map(i => <div key={i} className="h-20 rounded-2xl bg-muted animate-pulse" />)}
+        </div>
+      ) : sorted.length === 0 ? (
+        <div className="neu-card rounded-2xl p-12 text-center">
+          <Gift className="w-10 h-10 text-muted-foreground mx-auto mb-3 opacity-40" />
+          <p className="font-semibold text-muted-foreground">No bucket packages yet</p>
+          <p className="text-xs text-muted-foreground mt-1">Click "Add Bucket" to create your first highlighted bundle</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {sorted.map((b, idx) => (
+            <div key={b._id} className={`neu-card rounded-2xl px-5 py-4 flex items-center gap-4 transition-opacity ${!b.isActive ? "opacity-50" : ""}`}>
+              <div className="flex flex-col gap-0.5 shrink-0">
+                <button onClick={() => handleMove(b, -1)} disabled={idx === 0} className="p-1 rounded text-muted-foreground hover:text-foreground disabled:opacity-20 disabled:cursor-not-allowed transition-colors">
+                  <ChevronUp className="w-3.5 h-3.5" />
+                </button>
+                <button onClick={() => handleMove(b, 1)} disabled={idx === sorted.length - 1} className="p-1 rounded text-muted-foreground hover:text-foreground disabled:opacity-20 disabled:cursor-not-allowed transition-colors">
+                  <ChevronDown className="w-3.5 h-3.5" />
+                </button>
+              </div>
+
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-lg shrink-0" style={{ background: `${b.accentColor}22` }}>
+                <Gift className="w-5 h-5" style={{ color: b.accentColor }} />
+              </div>
+
+              <div className="flex-1 min-w-0">
+                <div className="font-bold text-sm truncate">{b.title}</div>
+                <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                  <span className="text-xs px-2 py-0.5 rounded-full font-medium text-white" style={{ background: b.accentColor }}>{b.badgeText}</span>
+                  <span className="text-xs text-primary font-medium">{(b.productIds ?? []).length} products</span>
+                  {b.comboPrice != null && b.comboPrice > 0 && <span className="text-xs font-bold text-primary">₹{b.comboPrice} combo</span>}
+                  {b.showOnHomepage && <span className="text-xs bg-muted px-2 py-0.5 rounded-full text-muted-foreground font-medium">Home Page</span>}
+                  {b.showAsAddon && <span className="text-xs bg-muted px-2 py-0.5 rounded-full text-muted-foreground font-medium">Cart Add-on</span>}
+                </div>
+              </div>
+
+              <button
+                onClick={() => handleToggleActive(b)}
+                disabled={saving === b._id}
+                className="shrink-0 transition-colors"
+                title={b.isActive ? "Active" : "Inactive"}
+              >
+                {saving === b._id ? (
+                  <Loader2 className="w-6 h-6 animate-spin text-muted-foreground" />
+                ) : b.isActive ? (
+                  <ToggleRight className="w-8 h-8 text-primary" />
+                ) : (
+                  <ToggleLeft className="w-8 h-8 text-muted-foreground" />
+                )}
+              </button>
+
+              <div className="flex gap-1 shrink-0">
+                <button onClick={() => openEdit(b)} className="p-2 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground">
+                  <Edit2 className="w-4 h-4" />
+                </button>
+                <button onClick={() => handleDelete(b)} disabled={saving === b._id + "-del"} className="p-2 rounded-lg hover:bg-destructive/10 transition-colors text-muted-foreground hover:text-destructive">
+                  {saving === b._id + "-del" ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showForm && (
+        <div className="fixed inset-0 z-50 bg-black/60 flex items-end sm:items-center justify-center p-4" onClick={() => setShowForm(false)}>
+          <div className="bg-card rounded-3xl p-6 w-full max-w-lg space-y-5 max-h-[90vh] overflow-y-auto" onClick={e => e.stopPropagation()}>
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-lg">{editing ? "Edit Bucket" : "New Bucket"}</h3>
+              <button onClick={() => setShowForm(false)} className="p-2 rounded-lg hover:bg-muted text-muted-foreground"><X className="w-4 h-4" /></button>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">Bucket Title</label>
+              <Input value={formTitle} onChange={e => setFormTitle(e.target.value)} placeholder="e.g. Late Night Snack Combo" className="rounded-xl" />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">Subtitle (optional)</label>
+              <Input value={formSubtitle} onChange={e => setFormSubtitle(e.target.value)} placeholder="e.g. Fresh picks from Sandy's Fast Food" className="rounded-xl" />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">
+                Combo Price <span className="normal-case font-normal text-muted-foreground/70">(optional — e.g. 399 for a ₹399 bundle deal)</span>
+              </label>
+              <div className="relative">
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground font-semibold text-sm">₹</span>
+                <Input
+                  type="number"
+                  min="0"
+                  value={formComboPrice}
+                  onChange={e => setFormComboPrice(e.target.value)}
+                  placeholder="Leave blank to hide price badge"
+                  className="rounded-xl pl-7"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">
+                Max Qty Per Cart <span className="normal-case font-normal text-muted-foreground/70">(optional — e.g. 1 to allow only 1 per customer, blank = unlimited)</span>
+              </label>
+              <Input
+                type="number"
+                min="1"
+                value={formMaxQtyPerCart}
+                onChange={e => setFormMaxQtyPerCart(e.target.value)}
+                placeholder="Leave blank for unlimited"
+                className="rounded-xl"
+              />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">Attention Badge</label>
+              <Input value={formBadgeText} onChange={e => setFormBadgeText(e.target.value)} placeholder="🔥 Hot Pick" className="rounded-xl" />
+            </div>
+
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">Accent Color</label>
+              <div className="flex gap-2">
+                {ACCENT_PRESETS.map(c => (
+                  <button
+                    key={c}
+                    onClick={() => setFormAccentColor(c)}
+                    className={`w-8 h-8 rounded-full border-2 transition-transform ${formAccentColor === c ? "border-foreground scale-110" : "border-transparent"}`}
+                    style={{ background: c }}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="flex gap-4">
+              <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+                <input type="checkbox" checked={formShowOnHomepage} onChange={e => setFormShowOnHomepage(e.target.checked)} className="w-4 h-4 accent-primary" />
+                Show on Home Page
+              </label>
+              <label className="flex items-center gap-2 text-sm font-medium cursor-pointer">
+                <input type="checkbox" checked={formShowAsAddon} onChange={e => setFormShowAsAddon(e.target.checked)} className="w-4 h-4 accent-primary" />
+                Suggest as Cart Add-on
+              </label>
+            </div>
+
+            <div className="space-y-3">
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide block">
+                Select Products <span className="text-primary font-bold">({formProductIds.length} selected)</span>
+              </label>
+
+              <div>
+                <p className="text-xs text-muted-foreground mb-2">Browse by shop — pick one to see its products:</p>
+                <div className="flex flex-wrap gap-2">
+                  {pickerShops.map(sh => (
+                    <button
+                      key={sh._id}
+                      onClick={() => setPickerSelectedShopId(prev => prev === sh._id ? "" : sh._id)}
+                      className={`text-xs px-3 py-1.5 rounded-full border font-medium transition-all ${
+                        pickerSelectedShopId === sh._id
+                          ? "border-primary bg-primary/10 text-primary"
+                          : "border-border bg-muted text-muted-foreground hover:border-primary/50"
+                      }`}
+                    >
+                      {sh.shopName}
+                    </button>
+                  ))}
+                  {pickerShops.length === 0 && <p className="text-xs text-muted-foreground">Loading shops…</p>}
+                </div>
+              </div>
+
+              {pickerSelectedShopId && (
+                <div className="neu-inset rounded-xl overflow-hidden">
+                  {pickerShopLoading ? (
+                    <div className="p-4 text-center text-xs text-muted-foreground">Loading products…</div>
+                  ) : pickerShopProducts.length === 0 ? (
+                    <div className="p-4 text-center text-xs text-muted-foreground">No active products in this shop</div>
+                  ) : (
+                    <div className="max-h-52 overflow-y-auto divide-y divide-border">
+                      {pickerShopProducts.map(p => {
+                        const selected = formProductIds.includes(p._id);
+                        return (
+                          <button
+                            key={p._id}
+                            onClick={() => toggleProduct(p)}
+                            className={`w-full flex items-center gap-3 px-3 py-2.5 text-left transition-colors ${selected ? "bg-primary/5" : "hover:bg-muted/50"}`}
+                          >
+                            <div className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors ${selected ? "border-primary bg-primary" : "border-muted-foreground/40"}`}>
+                              {selected && <span className="text-[10px] text-primary-foreground font-bold">✓</span>}
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium truncate">{p.name}</p>
+                              {p.category && <p className="text-[11px] text-muted-foreground capitalize">{p.category}</p>}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div>
+                <p className="text-xs text-muted-foreground mb-1.5">Or search across all shops:</p>
+                <Input
+                  value={formProductSearch}
+                  onChange={e => setFormProductSearch(e.target.value)}
+                  placeholder="Type product name…"
+                  className="rounded-xl"
+                />
+                {productSearchLoading && <p className="text-xs text-muted-foreground mt-1">Searching…</p>}
+                {productSearchResults.length > 0 && (
+                  <div className="neu-inset rounded-xl divide-y divide-border max-h-40 overflow-y-auto mt-1">
+                    {productSearchResults.map(p => (
+                      <button
+                        key={p._id}
+                        onClick={() => { toggleProduct(p); setFormProductSearch(""); setProductSearchResults([]); }}
+                        className={`w-full flex items-center gap-3 px-3 py-2 transition-colors text-left ${formProductIds.includes(p._id) ? "bg-primary/5" : "hover:bg-muted/50"}`}
+                      >
+                        <div className={`w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 ${formProductIds.includes(p._id) ? "border-primary bg-primary" : "border-muted-foreground/40"}`}>
+                          {formProductIds.includes(p._id) && <span className="text-[10px] text-primary-foreground font-bold">✓</span>}
+                        </div>
+                        <span className="text-sm font-medium truncate">{p.name}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {formProductIds.length > 0 && (
+                <div>
+                  <p className="text-xs font-semibold text-muted-foreground mb-1.5">Selected ({formProductIds.length}):</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {formProductIds.map(pid => (
+                      <span key={pid} className="flex items-center gap-1 text-xs bg-primary/10 text-primary px-2.5 py-1 rounded-full font-medium max-w-[180px]">
+                        <span className="truncate">{formProductNames[pid] ?? pid.slice(0, 8) + "…"}</span>
+                        <button onClick={() => setFormProductIds(prev => prev.filter(x => x !== pid))} className="shrink-0">
+                          <X className="w-3 h-3" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="flex gap-3 pt-1">
+              <Button onClick={handleSave} disabled={saving === "form"} className="flex-1 rounded-xl">
+                {saving === "form" ? <Loader2 className="w-4 h-4 animate-spin" /> : editing ? "Save Changes" : "Create Bucket"}
+              </Button>
+              <Button variant="outline" onClick={() => setShowForm(false)} className="rounded-xl">Cancel</Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// SERVICE AREAS TAB — Pincode / Area / State management
+// ============================================================================
+
+const INDIAN_STATES = [
+  "Andaman and Nicobar Islands", "Andhra Pradesh", "Arunachal Pradesh", "Assam",
+  "Bihar", "Chandigarh", "Chhattisgarh", "Dadra and Nagar Haveli and Daman and Diu",
+  "Delhi", "Goa", "Gujarat", "Haryana", "Himachal Pradesh", "Jammu and Kashmir",
+  "Jharkhand", "Karnataka", "Kerala", "Ladakh", "Lakshadweep", "Madhya Pradesh",
+  "Maharashtra", "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha",
+  "Puducherry", "Punjab", "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana",
+  "Tripura", "Uttar Pradesh", "Uttarakhand", "West Bengal",
+];
+
+interface ServicePincodeRow {
+  pincode: string;
+  area: string;
+  state: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
+const EMPTY_PIN_FORM = { pincode: "", area: "", state: "West Bengal" };
+
+function ServiceAreasTab() {
+  const [rows, setRows] = useState<ServicePincodeRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState(EMPTY_PIN_FORM);
+  const [saving, setSaving] = useState(false);
+  const [editingRow, setEditingRow] = useState<ServicePincodeRow | null>(null);
+  const [editForm, setEditForm] = useState(EMPTY_PIN_FORM);
+  const [deletingPin, setDeletingPin] = useState<string | null>(null);
+  const [togglingPin, setTogglingPin] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const d = await api.get<{ success: boolean; pincodes: ServicePincodeRow[] }>("/service-pincodes");
+      setRows(d.pincodes ?? []);
+    } catch {
+      toast.error("Failed to load service areas");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    if (!q) return rows;
+    return rows.filter(r =>
+      r.pincode.includes(q) ||
+      r.area.toLowerCase().includes(q) ||
+      r.state.toLowerCase().includes(q)
+    );
+  }, [rows, search]);
+
+  const stateGroups = useMemo(() => {
+    const map: Record<string, number> = {};
+    rows.forEach(r => { map[r.state] = (map[r.state] ?? 0) + 1; });
+    return Object.entries(map).sort((a, b) => b[1] - a[1]);
+  }, [rows]);
+
+  const activeCount = rows.filter(r => r.isActive).length;
+
+  const handleAdd = async () => {
+    if (!/^\d{6}$/.test(form.pincode)) { toast.error("Pincode must be exactly 6 digits"); return; }
+    if (!form.area.trim()) { toast.error("Area / Town name is required"); return; }
+    if (!form.state) { toast.error("State is required"); return; }
+    setSaving(true);
+    try {
+      await api.post("/service-pincodes", { pincode: form.pincode, area: form.area.trim(), state: form.state });
+      toast.success(`Pincode ${form.pincode} added`);
+      setForm(EMPTY_PIN_FORM);
+      setShowForm(false);
+      load();
+    } catch {
+      toast.error("Failed to add pincode");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingRow) return;
+    if (!editForm.area.trim()) { toast.error("Area name is required"); return; }
+    setSaving(true);
+    try {
+      await api.patch(`/service-pincodes/${editingRow.pincode}`, { area: editForm.area.trim(), state: editForm.state });
+      toast.success("Updated successfully");
+      setEditingRow(null);
+      load();
+    } catch {
+      toast.error("Failed to update");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggle = async (row: ServicePincodeRow) => {
+    setTogglingPin(row.pincode);
+    try {
+      await api.patch(`/service-pincodes/${row.pincode}`, { isActive: !row.isActive });
+      toast.success(row.isActive ? "Pincode deactivated" : "Pincode activated");
+      load();
+    } catch {
+      toast.error("Failed to update status");
+    } finally {
+      setTogglingPin(null);
+    }
+  };
+
+  const handleDelete = async (pincode: string) => {
+    setDeletingPin(pincode);
+    try {
+      await api.delete(`/service-pincodes/${pincode}`);
+      toast.success(`Pincode ${pincode} removed`);
+      load();
+    } catch {
+      toast.error("Failed to delete");
+    } finally {
+      setDeletingPin(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-foreground flex items-center gap-2">
+            <MapPin className="w-6 h-6 text-primary" /> Service Areas
+          </h2>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Manage pincodes, areas and states where StockFlow delivers
+          </p>
+        </div>
+        <Button onClick={() => { setShowForm(true); setForm(EMPTY_PIN_FORM); }} className="rounded-xl gap-2 shrink-0">
+          <Plus className="w-4 h-4" /> Add Pincode
+        </Button>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-3 gap-4">
+        {[
+          { label: "Total Pincodes", value: rows.length, color: "text-foreground" },
+          { label: "Active", value: activeCount, color: "text-green-600" },
+          { label: "States Covered", value: stateGroups.length, color: "text-primary" },
+        ].map(s => (
+          <div key={s.label} className="bg-card border border-border rounded-2xl p-4 text-center shadow-sm">
+            <div className={`text-3xl font-bold ${s.color}`}>{s.value}</div>
+            <div className="text-xs text-muted-foreground mt-1 font-medium">{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* State breakdown pills */}
+      {stateGroups.length > 0 && (
+        <div className="bg-card border border-border rounded-2xl p-4">
+          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-3">Pincodes by State</p>
+          <div className="flex flex-wrap gap-2">
+            {stateGroups.map(([state, count]) => (
+              <span key={state} className="inline-flex items-center gap-1.5 bg-primary/10 text-primary text-xs font-medium px-3 py-1.5 rounded-full">
+                <MapPin className="w-3 h-3" />
+                {state}
+                <span className="bg-primary text-primary-foreground rounded-full px-1.5 min-w-[18px] text-center text-[10px] font-bold">{count}</span>
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Add form */}
+      {showForm && (
+        <div className="bg-card border border-border rounded-2xl p-5 space-y-4 shadow-sm">
+          <h3 className="font-semibold text-foreground flex items-center gap-2">
+            <Plus className="w-4 h-4 text-primary" /> Add New Service Pincode
+          </h3>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">
+                Pincode <span className="text-red-500">*</span>
+              </label>
+              <Input
+                placeholder="e.g. 733101"
+                value={form.pincode}
+                maxLength={6}
+                onChange={e => setForm(f => ({ ...f, pincode: e.target.value.replace(/\D/g, "") }))}
+                className="rounded-xl font-mono"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">
+                Area / Town <span className="text-red-500">*</span>
+              </label>
+              <Input
+                placeholder="e.g. Balurghat"
+                value={form.area}
+                onChange={e => setForm(f => ({ ...f, area: e.target.value }))}
+                className="rounded-xl"
+              />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-muted-foreground uppercase tracking-wide mb-1.5 block">
+                State <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={form.state}
+                onChange={e => setForm(f => ({ ...f, state: e.target.value }))}
+                className="w-full rounded-xl border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/30"
+              >
+                {INDIAN_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="flex gap-3 pt-1">
+            <Button onClick={handleAdd} disabled={saving} className="rounded-xl gap-2">
+              {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
+              Add Pincode
+            </Button>
+            <Button variant="outline" onClick={() => setShowForm(false)} className="rounded-xl">Cancel</Button>
+          </div>
+        </div>
+      )}
+
+      {/* Search */}
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+        <Input
+          placeholder="Search by pincode, area or state…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+          className="pl-9 rounded-xl"
+        />
+      </div>
+
+      {/* Table */}
+      {loading ? (
+        <div className="flex items-center justify-center py-20">
+          <Loader2 className="w-8 h-8 animate-spin text-primary" />
+        </div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-20 text-muted-foreground">
+          <MapPin className="w-12 h-12 mx-auto mb-3 opacity-25" />
+          <p className="font-semibold text-base">{search ? "No results found" : "No service areas yet"}</p>
+          <p className="text-sm mt-1">{search ? "Try a different search term" : 'Click "Add Pincode" to get started'}</p>
+        </div>
+      ) : (
+        <div className="bg-card border border-border rounded-2xl overflow-hidden shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/40">
+                  <th className="text-left px-5 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Pincode</th>
+                  <th className="text-left px-5 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Area / Town</th>
+                  <th className="text-left px-5 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">State</th>
+                  <th className="text-left px-5 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Status</th>
+                  <th className="text-right px-5 py-3 text-xs font-semibold text-muted-foreground uppercase tracking-wide">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {filtered.map(row => (
+                  <tr key={row.pincode} className="hover:bg-muted/20 transition-colors">
+                    {editingRow?.pincode === row.pincode ? (
+                      <>
+                        <td className="px-5 py-3 font-mono font-bold text-primary text-base">{row.pincode}</td>
+                        <td className="px-5 py-3">
+                          <Input
+                            value={editForm.area}
+                            onChange={e => setEditForm(f => ({ ...f, area: e.target.value }))}
+                            className="rounded-lg h-8 text-sm"
+                            placeholder="Area / Town"
+                          />
+                        </td>
+                        <td className="px-5 py-3">
+                          <select
+                            value={editForm.state}
+                            onChange={e => setEditForm(f => ({ ...f, state: e.target.value }))}
+                            className="w-full rounded-lg border border-input bg-background px-2 py-1.5 text-sm"
+                          >
+                            {INDIAN_STATES.map(s => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                        </td>
+                        <td className="px-5 py-3">
+                          <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${row.isActive ? "bg-green-100 text-green-700" : "bg-slate-100 text-slate-500"}`}>
+                            {row.isActive ? "Active" : "Inactive"}
+                          </span>
+                        </td>
+                        <td className="px-5 py-3">
+                          <div className="flex items-center justify-end gap-2">
+                            <Button size="sm" onClick={handleSaveEdit} disabled={saving} className="rounded-lg h-8 px-3 gap-1 text-xs">
+                              {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <CheckCircle className="w-3 h-3" />} Save
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => setEditingRow(null)} className="rounded-lg h-8 px-3 text-xs">
+                              Cancel
+                            </Button>
+                          </div>
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="px-5 py-3">
+                          <span className="font-mono font-bold text-primary text-base">{row.pincode}</span>
+                        </td>
+                        <td className="px-5 py-3 font-medium text-foreground">{row.area || <span className="text-muted-foreground italic text-xs">—</span>}</td>
+                        <td className="px-5 py-3 text-muted-foreground text-sm">{row.state}</td>
+                        <td className="px-5 py-3">
+                          <button
+                            onClick={() => handleToggle(row)}
+                            disabled={togglingPin === row.pincode}
+                            title={row.isActive ? "Click to deactivate" : "Click to activate"}
+                            className={`inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-full border transition-all ${
+                              row.isActive
+                                ? "bg-green-50 text-green-700 border-green-200 hover:bg-red-50 hover:text-red-600 hover:border-red-200"
+                                : "bg-slate-50 text-slate-500 border-slate-200 hover:bg-green-50 hover:text-green-700 hover:border-green-200"
+                            }`}
+                          >
+                            {togglingPin === row.pincode
+                              ? <Loader2 className="w-3 h-3 animate-spin" />
+                              : row.isActive
+                                ? <CheckCircle className="w-3 h-3" />
+                                : <XCircle className="w-3 h-3" />
+                            }
+                            {row.isActive ? "Active" : "Inactive"}
+                          </button>
+                        </td>
+                        <td className="px-5 py-3">
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              size="sm" variant="outline"
+                              onClick={() => { setEditingRow(row); setEditForm({ pincode: row.pincode, area: row.area, state: row.state }); }}
+                              className="rounded-lg h-8 w-8 p-0"
+                              title="Edit"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </Button>
+                            <Button
+                              size="sm" variant="outline"
+                              onClick={() => handleDelete(row.pincode)}
+                              disabled={deletingPin === row.pincode}
+                              className="rounded-lg h-8 w-8 p-0 text-red-500 hover:bg-red-50 hover:text-red-600 border-red-200"
+                              title="Delete"
+                            >
+                              {deletingPin === row.pincode
+                                ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                : <Trash2 className="w-3.5 h-3.5" />
+                              }
+                            </Button>
+                          </div>
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-5 py-3 border-t border-border bg-muted/20 text-xs text-muted-foreground flex items-center gap-2">
+            <MapPin className="w-3.5 h-3.5" />
+            {filtered.length} pincode{filtered.length !== 1 ? "s" : ""}{search ? ` matching "${search}"` : " total"}
+            {" · "}{activeCount} active · {stateGroups.length} state{stateGroups.length !== 1 ? "s" : ""}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// DELIVERY PARTNERS TAB
+// ============================================================================
+
+interface DeliveryPartnerRow {
+  _id: string;
+  name: string;
+  phone: string;
+  vehicle?: string;
+  status: string;
+  isAvailable: boolean;
+  ordersDelivered: number;
+  totalEarnings: number;
+  createdAt: string;
+  userId?: string;
+}
+
+const VEHICLE_OPTIONS = ["Bike", "Bicycle", "Scooter", "E-Bike", "On Foot"];
+const STATUS_OPTIONS = ["active", "inactive", "suspended"];
+
+interface RiderApplication {
+  _id: string;
+  name: string;
+  phone: string;
+  cityId?: string;
+  vehicle?: string;
+  panNumber?: string;
+  dlNumber?: string;
+  rcNumber?: string;
+  documents?: {
+    panPhoto?: string;
+    dlFront?: string;
+    dlBack?: string;
+    rcPhoto?: string;
+    insurancePhoto?: string;
+    [key: string]: string | undefined;
+  };
+  applicationStatus: string;
+  status: string;
+  createdAt: string;
+}
+
+interface RiderItem {
+  _id: string;
+  id?: string;
+  name: string;
+  phone: string;
+  photoUrl?: string;
+  vehicle?: string;
+  status: string;
+  isAvailable: boolean;
+  currentLat?: number | null;
+  currentLon?: number | null;
+  currentOrderId?: string | null;
+  locationUpdatedAt?: string | null;
+  rating?: number;
+  createdAt?: string;
+}
+
+function AllRidersTabContent({ onCountUpdate }: { onCountUpdate?: (count: number) => void }) {
+  const [viewMode, setViewMode] = useState<'list' | 'map'>('list');
+  const [riders, setRiders] = useState<RiderItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const fetchRiders = useCallback(async (isSilent = false) => {
+    if (!isSilent) setLoading(true);
+    try {
+      const res = await api.get<{ success: boolean; riders: RiderItem[] }>('/admin/riders');
+      if (res.success && Array.isArray(res.riders)) {
+        setRiders(res.riders);
+        onCountUpdate?.(res.riders.length);
+      }
+    } catch {
+      if (!isSilent) toast.error("Failed to load riders");
+    } finally {
+      if (!isSilent) setLoading(false);
+    }
+  }, [onCountUpdate]);
+
+  useEffect(() => {
+    fetchRiders(false);
+    intervalRef.current = setInterval(() => {
+      if (document.visibilityState === "visible") {
+        fetchRiders(true);
+      }
+    }, 20000);
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, [fetchRiders]);
+
+  const handleToggleStatus = async (r: RiderItem) => {
+    const riderId = r._id || r.id;
+    if (!riderId) return;
+    const nextStatus = r.status === 'active' ? 'inactive' : 'active';
+    setTogglingId(riderId);
+    try {
+      await api.patch(`/admin/riders/${riderId}/status`, { status: nextStatus });
+      toast.success(`${r.name} marked as ${nextStatus}`);
+      fetchRiders(true);
+    } catch {
+      toast.error("Failed to update rider status");
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  const filteredRiders = useMemo(() => {
+    const q = search.toLowerCase();
+    return riders.filter(r =>
+      !q || r.name.toLowerCase().includes(q) || r.phone.includes(q) || (r.vehicle ?? "").toLowerCase().includes(q)
+    );
+  }, [riders, search]);
+
+  const formatAgo = (iso?: string | null) => {
+    if (!iso) return "Never";
+    const diff = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
+    if (diff < 15) return "Just now";
+    if (diff < 60) return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    return `${Math.floor(diff / 3600)}h ago`;
+  };
+
+  return (
+    <div className="space-y-4">
+      {/* Header controls: Search & View Mode Toggle */}
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-card p-3 rounded-2xl neu-card">
+        <div className="relative flex-1 max-w-md">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+          <Input
+            placeholder="Search riders by name, phone or vehicle..."
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="pl-9 h-9 text-xs rounded-xl"
+          />
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => fetchRiders(false)}
+            className="h-8 gap-1.5 rounded-xl text-xs neu-card"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+          <span className="text-xs text-muted-foreground font-mono hidden md:inline">
+            Auto-refresh 15s 🟢
+          </span>
+          <div className="flex p-1 bg-muted/60 rounded-xl">
+            <button
+              onClick={() => setViewMode('list')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                viewMode === 'list' ? 'bg-card text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <List className="w-3.5 h-3.5" /> List View
+            </button>
+            <button
+              onClick={() => setViewMode('map')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                viewMode === 'map' ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+              }`}
+            >
+              <MapPin className="w-3.5 h-3.5" /> Map View
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {viewMode === 'map' ? (
+        <FleetMapTab />
+      ) : loading ? (
+        <div className="space-y-3">{[1, 2, 3, 4].map(i => <div key={i} className="h-16 bg-muted/60 rounded-2xl animate-pulse" />)}</div>
+      ) : filteredRiders.length === 0 ? (
+        <div className="text-center p-12 bg-card rounded-3xl neu-inset text-muted-foreground">
+          <Truck className="w-12 h-12 mx-auto mb-3 opacity-20" />
+          <p className="font-semibold text-foreground">No Approved Riders Found</p>
+          <p className="text-xs mt-1">Approved delivery partners for Balurghat city will appear here.</p>
+        </div>
+      ) : (
+        <div className="bg-card rounded-3xl neu-card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="bg-muted/50 text-xs uppercase text-muted-foreground border-b border-border/40 font-semibold">
+                <tr>
+                  <th className="px-5 py-3.5">Rider Profile</th>
+                  <th className="px-5 py-3.5">Status</th>
+                  <th className="px-5 py-3.5">Current Order</th>
+                  <th className="px-5 py-3.5">Vehicle</th>
+                  <th className="px-5 py-3.5">Rating</th>
+                  <th className="px-5 py-3.5">Last Location Update</th>
+                  <th className="px-5 py-3.5 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/40">
+                {filteredRiders.map(r => {
+                  const isOnDelivery = Boolean(r.currentOrderId);
+                  const isOnline = r.isAvailable && r.status === 'active';
+                  const riderId = r._id || r.id || "";
+                  return (
+                    <tr key={riderId} className="hover:bg-muted/20 transition-colors">
+                      <td className="px-5 py-4">
+                        <div className="flex items-center gap-3">
+                          {r.photoUrl ? (
+                            <img src={r.photoUrl} alt={r.name} className="w-9 h-9 rounded-full object-cover border" />
+                          ) : (
+                            <div className="w-9 h-9 rounded-full bg-primary/10 text-primary font-bold flex items-center justify-center text-sm border border-primary/20">
+                              {r.name.slice(0, 1).toUpperCase()}
+                            </div>
+                          )}
+                          <div>
+                            <div className="font-bold text-foreground">{r.name}</div>
+                            <div className="text-xs font-mono text-muted-foreground">{r.phone}</div>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-5 py-4">
+                        {isOnDelivery ? (
+                          <span className="inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300">
+                            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" /> On Delivery
+                          </span>
+                        ) : isOnline ? (
+                          <span className="inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300">
+                            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" /> Online
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full bg-muted text-muted-foreground">
+                            <span className="w-2 h-2 rounded-full bg-gray-400" /> Offline
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-5 py-4">
+                        {r.currentOrderId ? (
+                          <Badge variant="secondary" className="font-mono text-xs text-primary bg-primary/10">
+                            #ORD_{r.currentOrderId.slice(-6).toUpperCase()}
+                          </Badge>
+                        ) : (
+                          <span className="text-xs text-muted-foreground opacity-50">-</span>
+                        )}
+                      </td>
+                      <td className="px-5 py-4">
+                        <Badge variant="outline" className="capitalize text-xs font-medium">
+                          {r.vehicle || 'Bike'}
+                        </Badge>
+                      </td>
+                      <td className="px-5 py-4 font-bold text-amber-500 flex items-center gap-1">
+                        ★ {r.rating ?? 4.8}
+                      </td>
+                      <td className="px-5 py-4 text-xs font-mono text-muted-foreground">
+                        {formatAgo(r.locationUpdatedAt)}
+                      </td>
+                      <td className="px-5 py-4 text-right">
+                        <div className="flex items-center justify-end gap-2">
+                          <a
+                            href={`tel:${r.phone}`}
+                            className="p-1.5 rounded-xl bg-muted/60 hover:bg-muted text-primary transition-colors inline-flex items-center justify-center"
+                            title="Call rider"
+                          >
+                            <Phone className="w-3.5 h-3.5" />
+                          </a>
+                          <Button
+                            size="sm"
+                            variant={r.status === 'active' ? 'outline' : 'default'}
+                            disabled={togglingId === riderId}
+                            onClick={() => handleToggleStatus(r)}
+                            className="h-7 px-2.5 text-xs rounded-xl font-medium"
+                          >
+                            {togglingId === riderId ? (
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                            ) : r.status === 'active' ? (
+                              'Suspend'
+                            ) : (
+                              'Activate'
+                            )}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function RidersSectionTab() {
+  const [subTab, setSubTab] = useState<'applications' | 'all'>('all');
+  const [applications, setApplications] = useState<RiderApplication[]>([]);
+  const [approvedCount, setApprovedCount] = useState<number | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [selectedDocs, setSelectedDocs] = useState<RiderApplication | null>(null);
+  const [rejectingId, setRejectingId] = useState<string | null>(null);
+  const [rejectReason, setRejectReason] = useState("");
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+
+  const fetchApplications = useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await api.get<{ success: boolean; applications: RiderApplication[] }>('/admin/riders/applications?status=pending');
+      const apps = res.applications ?? [];
+      setApplications(apps);
+      if (apps.length > 0) {
+        setSubTab('applications');
+      }
+    } catch {
+      toast.error("Failed to load rider applications");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const fetchApprovedCount = useCallback(async () => {
+    try {
+      const res = await api.get<{ success: boolean; riders: RiderItem[] }>('/admin/riders');
+      if (res.success && Array.isArray(res.riders)) {
+        setApprovedCount(res.riders.length);
+      }
+    } catch {
+      // silent
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchApplications();
+    fetchApprovedCount();
+  }, [fetchApplications, fetchApprovedCount]);
+
+  const handleApprove = async (id: string) => {
+    setActionLoading(id);
+    try {
+      await api.post(`/admin/riders/${id}/approve`);
+      toast.success("Rider application approved!");
+      fetchApplications();
+      fetchApprovedCount();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to approve rider");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleReject = async () => {
+    if (!rejectingId) return;
+    if (!rejectReason.trim()) {
+      toast.error("Please enter a reason for rejection");
+      return;
+    }
+    setActionLoading(rejectingId);
+    try {
+      await api.post(`/admin/riders/${rejectingId}/reject`, { reason: rejectReason.trim() });
+      toast.success("Rider application rejected.");
+      setRejectingId(null);
+      setRejectReason("");
+      fetchApplications();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to reject rider");
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold text-foreground flex items-center gap-2">
+            <Truck className="w-6 h-6 text-primary" /> Rider Management
+          </h2>
+          <p className="text-sm text-muted-foreground mt-0.5">Review pending applications & manage delivery partners</p>
+        </div>
+      </div>
+
+      {/* Sub Tabs */}
+      <div className="flex gap-2 p-1 bg-background neu-inset rounded-xl max-w-fit">
+        <button
+          onClick={() => setSubTab('all')}
+          className={`px-6 py-2 rounded-lg text-sm font-medium transition-all ${
+            subTab === 'all' ? 'bg-primary text-primary-foreground neu-card' : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          All Approved Riders {approvedCount !== null ? `(${approvedCount})` : ''}
+        </button>
+        <button
+          onClick={() => setSubTab('applications')}
+          className={`px-6 py-2 rounded-lg text-sm font-medium transition-all ${
+            subTab === 'applications' ? 'bg-primary text-primary-foreground neu-card' : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          Pending Applications ({applications.length})
+        </button>
+      </div>
+
+      {subTab === 'applications' ? (
+        <div className="space-y-4">
+          {loading ? (
+            <div className="space-y-3">{[1, 2, 3].map(i => <div key={i} className="h-20 bg-muted rounded-2xl animate-pulse" />)}</div>
+          ) : applications.length === 0 ? (
+            <div className="text-center p-12 bg-card rounded-3xl neu-inset text-muted-foreground">
+              <Truck className="w-12 h-12 mx-auto mb-3 opacity-20" />
+              <p className="font-semibold text-foreground">No Pending Applications</p>
+              <p className="text-xs mt-1">New rider signups from the mobile app will appear here for review.</p>
+            </div>
+          ) : (
+            <div className="bg-card rounded-3xl neu-card overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-left">
+                  <thead className="bg-muted/50 text-xs uppercase text-muted-foreground border-b border-border/40 font-semibold">
+                    <tr>
+                      <th className="px-5 py-3.5">Name</th>
+                      <th className="px-5 py-3.5">Phone</th>
+                      <th className="px-5 py-3.5">City</th>
+                      <th className="px-5 py-3.5">Vehicle Type</th>
+                      <th className="px-5 py-3.5">Submitted Date</th>
+                      <th className="px-5 py-3.5">Documents</th>
+                      <th className="px-5 py-3.5 text-right">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border/40">
+                    {applications.map(app => (
+                      <tr key={app._id} className="hover:bg-muted/20 transition-colors">
+                        <td className="px-5 py-4 font-bold text-foreground">{app.name}</td>
+                        <td className="px-5 py-4 font-mono text-muted-foreground">{app.phone}</td>
+                        <td className="px-5 py-4 capitalize">{app.cityId || 'Balurghat'}</td>
+                        <td className="px-5 py-4">
+                          <Badge variant="outline" className="capitalize">{app.vehicle || 'Bike'}</Badge>
+                        </td>
+                        <td className="px-5 py-4 text-xs text-muted-foreground">
+                          {new Date(app.createdAt).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}
+                        </td>
+                        <td className="px-5 py-4">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setSelectedDocs(app)}
+                            className="h-8 text-xs gap-1 rounded-xl neu-card"
+                          >
+                            <Eye className="w-3.5 h-3.5 text-primary" /> View Documents
+                          </Button>
+                        </td>
+                        <td className="px-5 py-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              size="sm"
+                              disabled={actionLoading === app._id}
+                              onClick={() => handleApprove(app._id)}
+                              className="h-8 px-3 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold"
+                            >
+                              {actionLoading === app._id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Approve"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              disabled={actionLoading === app._id}
+                              onClick={() => { setRejectingId(app._id); setRejectReason(""); }}
+                              className="h-8 px-3 text-xs rounded-xl font-bold"
+                            >
+                              Reject
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <AllRidersTabContent onCountUpdate={setApprovedCount} />
+      )}
+
+      {/* View Documents Modal */}
+      {selectedDocs && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-card rounded-3xl neu-card max-w-2xl w-full p-6 space-y-4 max-h-[90vh] overflow-y-auto border border-border">
+            <div className="flex items-center justify-between border-b border-border/40 pb-3">
+              <div>
+                <h3 className="font-bold text-lg text-foreground">KYC Documents — {selectedDocs.name}</h3>
+                <p className="text-xs text-muted-foreground font-mono">{selectedDocs.phone}</p>
+              </div>
+              <button onClick={() => setSelectedDocs(null)} className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <p className="text-xs font-bold text-muted-foreground uppercase">PAN Card ({selectedDocs.panNumber || 'N/A'})</p>
+                {selectedDocs.documents?.panPhoto ? (
+                  <img src={selectedDocs.documents.panPhoto} alt="PAN" className="w-full h-40 object-cover rounded-2xl border" />
+                ) : (
+                  <div className="w-full h-40 bg-muted/40 rounded-2xl flex items-center justify-center text-xs text-muted-foreground">No PAN Photo uploaded</div>
+                )}
+              </div>
+
+              <div className="space-y-1">
+                <p className="text-xs font-bold text-muted-foreground uppercase">RC Photo ({selectedDocs.rcNumber || 'N/A'})</p>
+                {selectedDocs.documents?.rcPhoto ? (
+                  <img src={selectedDocs.documents.rcPhoto} alt="RC" className="w-full h-40 object-cover rounded-2xl border" />
+                ) : (
+                  <div className="w-full h-40 bg-muted/40 rounded-2xl flex items-center justify-center text-xs text-muted-foreground">No RC Photo uploaded</div>
+                )}
+              </div>
+
+              <div className="space-y-1">
+                <p className="text-xs font-bold text-muted-foreground uppercase">DL Front ({selectedDocs.dlNumber || 'N/A'})</p>
+                {selectedDocs.documents?.dlFront ? (
+                  <img src={selectedDocs.documents.dlFront} alt="DL Front" className="w-full h-40 object-cover rounded-2xl border" />
+                ) : (
+                  <div className="w-full h-40 bg-muted/40 rounded-2xl flex items-center justify-center text-xs text-muted-foreground">No DL Front uploaded</div>
+                )}
+              </div>
+
+              <div className="space-y-1">
+                <p className="text-xs font-bold text-muted-foreground uppercase">DL Back</p>
+                {selectedDocs.documents?.dlBack ? (
+                  <img src={selectedDocs.documents.dlBack} alt="DL Back" className="w-full h-40 object-cover rounded-2xl border" />
+                ) : (
+                  <div className="w-full h-40 bg-muted/40 rounded-2xl flex items-center justify-center text-xs text-muted-foreground">No DL Back uploaded</div>
+                )}
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2">
+              <Button onClick={() => setSelectedDocs(null)} className="rounded-xl">Close</Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reject Reason Modal */}
+      {rejectingId && (
+        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-card rounded-3xl neu-card max-w-md w-full p-6 space-y-4 border border-border">
+            <h3 className="font-bold text-lg text-foreground">Reject Rider Application</h3>
+            <p className="text-xs text-muted-foreground">Please specify the reason for rejection (e.g., blurry DL photo, invalid PAN).</p>
+
+            <textarea
+              rows={3}
+              placeholder="Enter rejection reason..."
+              value={rejectReason}
+              onChange={e => setRejectReason(e.target.value)}
+              className="w-full p-3 rounded-2xl bg-background neu-inset border border-input text-sm text-foreground focus:outline-none"
+            />
+
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setRejectingId(null)} className="rounded-xl">Cancel</Button>
+              <Button
+                variant="destructive"
+                disabled={actionLoading === rejectingId}
+                onClick={handleReject}
+                className="rounded-xl"
+              >
+                {actionLoading === rejectingId ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : null} Confirm Reject
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const EMPTY_DP_FORM = { name: "", phone: "", vehicle: "Bike" };
+
+function DeliveryPartnersTab() {
+  const [partners, setPartners] = useState<DeliveryPartnerRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<string>("all");
+  const [showForm, setShowForm] = useState(false);
+  const [form, setForm] = useState(EMPTY_DP_FORM);
+  const [saving, setSaving] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<{ name: string; phone: string; vehicle: string; status: string }>({ name: "", phone: "", vehicle: "Bike", status: "active" });
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [togglingId, setTogglingId] = useState<string | null>(null);
+  const [linkingId, setLinkingId] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const d = await api.get<{ success: boolean; partners: DeliveryPartnerRow[] }>("/delivery");
+      setPartners(d.partners ?? []);
+    } catch {
+      toast.error("Failed to load delivery partners");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const [subTab, setSubTab] = useState<'all' | 'applications'>('all');
+
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase();
+    return partners.filter(p => {
+      const matchSearch = !q || p.name.toLowerCase().includes(q) || p.phone.includes(q) || (p.vehicle ?? "").toLowerCase().includes(q);
+      const matchStatus = statusFilter === "all" || p.status === statusFilter;
+      const matchTab = subTab === 'all' ? true : (!p.userId || p.status === 'inactive');
+      return matchSearch && matchStatus && matchTab;
+    });
+  }, [partners, search, statusFilter, subTab]);
+
+  const stats = useMemo(() => ({
+    total: partners.length,
+    active: partners.filter(p => p.status === "active").length,
+    available: partners.filter(p => p.isAvailable && p.status === "active").length,
+    totalOrders: partners.reduce((s, p) => s + p.ordersDelivered, 0),
+    totalEarnings: partners.reduce((s, p) => s + p.totalEarnings, 0),
+  }), [partners]);
+
+  const handleAdd = async () => {
+    if (!form.name.trim()) { toast.error("Name is required"); return; }
+    if (!/^\d{10}$/.test(form.phone)) { toast.error("Enter a valid 10-digit phone number"); return; }
+    setSaving(true);
+    try {
+      await api.post("/delivery", { name: form.name.trim(), phone: form.phone, vehicle: form.vehicle });
+      toast.success(`${form.name} added as delivery partner`);
+      setForm(EMPTY_DP_FORM);
+      setShowForm(false);
+      load();
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "Failed to add partner";
+      toast.error(msg.includes("unique") ? "Phone number already registered" : msg);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const openEdit = (p: DeliveryPartnerRow) => {
+    setEditingId(p._id);
+    setEditForm({ name: p.name, phone: p.phone, vehicle: p.vehicle ?? "Bike", status: p.status });
+  };
+
+  const handleSaveEdit = async () => {
+    if (!editingId) return;
+    if (!editForm.name.trim()) { toast.error("Name is required"); return; }
+    if (!/^\d{10}$/.test(editForm.phone)) { toast.error("Enter a valid 10-digit phone number"); return; }
+    setSaving(true);
+    try {
+      await api.patch(`/delivery/${editingId}`, { name: editForm.name.trim(), phone: editForm.phone, vehicle: editForm.vehicle, status: editForm.status, updatedAt: new Date().toISOString() });
+      toast.success("Partner updated");
+      setEditingId(null);
+      load();
+    } catch {
+      toast.error("Failed to update partner");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleToggleAvailability = async (p: DeliveryPartnerRow) => {
+    setTogglingId(p._id);
+    try {
+      await api.patch(`/delivery/${p._id}`, { isAvailable: !p.isAvailable, updatedAt: new Date().toISOString() });
+      await load();
+    } catch {
+      toast.error("Failed to update availability");
+    } finally {
+      setTogglingId(null);
+    }
+  };
+
+  const handleDelete = async (p: DeliveryPartnerRow) => {
+    if (!confirm(`Remove ${p.name} from delivery partners?`)) return;
+    setDeletingId(p._id);
+    try {
+      await api.delete(`/delivery/${p._id}`);
+      toast.success(`${p.name} removed`);
+      load();
+    } catch {
+      toast.error("Failed to remove partner");
+    } finally {
+      setDeletingId(null);
+    }
+  };
+
+  const handleLinkUser = async (p: DeliveryPartnerRow) => {
+    setLinkingId(p._id);
+    try {
+      const d = await api.post<{ success: boolean; message: string }>(`/delivery/${p._id}/link-user`, {});
+      if (d.success) {
+        toast.success(d.message ?? "Account linked!");
+        load();
+      }
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : "No user account found with this phone. Partner must sign up first.";
+      toast.error(msg);
+    } finally {
+      setLinkingId(null);
+    }
+  };
+
+  const statusBadge = (status: string) => {
+    if (status === "active") return <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400"><CheckCircle className="w-3 h-3" />Active</span>;
+    if (status === "suspended") return <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400"><Ban className="w-3 h-3" />Suspended</span>;
+    return <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-muted text-muted-foreground"><Clock className="w-3 h-3" />Inactive</span>;
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-2xl font-bold flex items-center gap-2"><Truck className="w-6 h-6 text-primary" />Delivery Partners</h2>
+          <p className="text-sm text-muted-foreground mt-0.5">Manage delivery agents for StockFlow Balurghat</p>
+        </div>
+        <Button onClick={() => { setShowForm(true); setEditingId(null); }} className="shrink-0">
+          <Plus className="w-4 h-4 mr-2" />Add Partner
+        </Button>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        {[
+          { label: "Total", value: stats.total, icon: Users },
+          { label: "Active", value: stats.active, icon: CheckCircle },
+          { label: "Available Now", value: stats.available, icon: Bike },
+          { label: "Orders Delivered", value: stats.totalOrders, icon: ShoppingBag },
+          { label: "Total Earnings", value: formatINR(stats.totalEarnings), icon: CreditCard },
+        ].map(({ label, value, icon: Icon }) => (
+          <div key={label} className="bg-card rounded-2xl p-4 neu-card flex flex-col gap-1">
+            <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-medium"><Icon className="w-3.5 h-3.5" />{label}</div>
+            <div className="text-xl font-bold">{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Sub-tabs */}
+      <div className="flex gap-2 p-1 bg-background neu-inset rounded-xl max-w-fit">
+        <button
+          onClick={() => setSubTab('all')}
+          className={`px-5 py-2 rounded-lg text-sm font-medium transition-all ${
+            subTab === 'all' ? 'bg-primary text-primary-foreground neu-card' : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          All Approved Riders ({partners.length})
+        </button>
+        <button
+          onClick={() => setSubTab('applications')}
+          className={`px-5 py-2 rounded-lg text-sm font-medium transition-all ${
+            subTab === 'applications' ? 'bg-primary text-primary-foreground neu-card' : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          Applications & Pending ({partners.filter(p => !p.userId || p.status === 'inactive').length})
+        </button>
+      </div>
+
+      {/* Add Form */}
+      <AnimatePresence>
+        {showForm && (
+          <motion.div initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }}
+            className="bg-card rounded-2xl neu-card p-5 space-y-4">
+            <h3 className="font-semibold text-base">Add New Delivery Partner</h3>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Full Name *</label>
+                <Input placeholder="e.g. Rahul Das" value={form.name} onChange={e => setForm((f: typeof EMPTY_DP_FORM) => ({ ...f, name: e.target.value }))} />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Phone (10 digits) *</label>
+                <Input placeholder="9876543210" maxLength={10} value={form.phone} onChange={e => setForm((f: typeof EMPTY_DP_FORM) => ({ ...f, phone: e.target.value.replace(/\D/g, "") }))} />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-muted-foreground">Vehicle</label>
+                <select
+                  className="w-full h-10 rounded-xl border border-input bg-background px-3 text-sm"
+                  value={form.vehicle}
+                  onChange={e => setForm((f: typeof EMPTY_DP_FORM) => ({ ...f, vehicle: e.target.value }))}
+                >
+                  {VEHICLE_OPTIONS.map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </div>
+            </div>
+            <div className="flex gap-2 pt-1">
+              <Button onClick={handleAdd} disabled={saving} className="min-w-[110px]">
+                {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : "Add Partner"}
+              </Button>
+              <Button variant="ghost" onClick={() => { setShowForm(false); setForm(EMPTY_DP_FORM); }}>Cancel</Button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Filters */}
+      <div className="flex flex-col sm:flex-row gap-3">
+        <div className="relative flex-1">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+          <Input placeholder="Search by name or phone…" className="pl-9" value={search} onChange={e => setSearch(e.target.value)} />
+        </div>
+        <div className="flex gap-2">
+          {["all", "active", "inactive", "suspended"].map(s => (
+            <button key={s} onClick={() => setStatusFilter(s)}
+              className={`px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors ${statusFilter === s ? "bg-primary text-primary-foreground border-primary" : "bg-card border-border text-muted-foreground hover:text-foreground"}`}>
+              {s === "all" ? "All" : s.charAt(0).toUpperCase() + s.slice(1)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Table */}
+      {loading ? (
+        <div className="flex justify-center py-16"><Loader2 className="w-7 h-7 animate-spin text-primary" /></div>
+      ) : filtered.length === 0 ? (
+        <div className="text-center py-16 text-muted-foreground">
+          <Truck className="w-10 h-10 mx-auto mb-3 opacity-30" />
+          <p className="font-medium">{search || statusFilter !== "all" ? "No partners match your filters" : "No delivery partners yet"}</p>
+          {!search && statusFilter === "all" && <p className="text-xs mt-1">Click "Add Partner" to get started</p>}
+        </div>
+      ) : (
+        <div className="bg-card rounded-2xl neu-card overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-border bg-muted/30">
+                  <th className="text-left px-5 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Partner</th>
+                  <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Vehicle</th>
+                  <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Status</th>
+                  <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">App Access</th>
+                  <th className="text-left px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Available</th>
+                  <th className="text-right px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Orders</th>
+                  <th className="text-right px-4 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Earnings</th>
+                  <th className="text-right px-5 py-3 font-semibold text-muted-foreground text-xs uppercase tracking-wide">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(p => (
+                  editingId === p._id ? (
+                    <tr key={p._id} className="border-b border-border bg-primary/5">
+                      <td className="px-5 py-3" colSpan={7}>
+                        <div className="flex flex-wrap gap-3 items-end">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-medium text-muted-foreground uppercase">Name</label>
+                            <Input className="h-8 text-sm w-44" value={editForm.name} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))} />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-medium text-muted-foreground uppercase">Phone</label>
+                            <Input className="h-8 text-sm w-36" maxLength={10} value={editForm.phone} onChange={e => setEditForm(f => ({ ...f, phone: e.target.value.replace(/\D/g, "") }))} />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-medium text-muted-foreground uppercase">Vehicle</label>
+                            <select className="h-8 rounded-lg border border-input bg-background px-2 text-sm w-28" value={editForm.vehicle} onChange={e => setEditForm(f => ({ ...f, vehicle: e.target.value }))}>
+                              {VEHICLE_OPTIONS.map(v => <option key={v} value={v}>{v}</option>)}
+                            </select>
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-medium text-muted-foreground uppercase">Status</label>
+                            <select className="h-8 rounded-lg border border-input bg-background px-2 text-sm w-28" value={editForm.status} onChange={e => setEditForm(f => ({ ...f, status: e.target.value }))}>
+                              {STATUS_OPTIONS.map(s => <option key={s} value={s}>{s.charAt(0).toUpperCase() + s.slice(1)}</option>)}
+                            </select>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button size="sm" onClick={handleSaveEdit} disabled={saving}>{saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Save"}</Button>
+                            <Button size="sm" variant="ghost" onClick={() => setEditingId(null)}>Cancel</Button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    <tr key={p._id} className="border-b border-border last:border-0 hover:bg-muted/20 transition-colors">
+                      <td className="px-5 py-3">
+                        <div className="font-semibold text-sm">{p.name}</div>
+                        <div className="text-xs text-muted-foreground">+91 {p.phone}</div>
+                      </td>
+                      <td className="px-4 py-3">
+                        <span className="inline-flex items-center gap-1 text-xs font-medium bg-muted px-2 py-0.5 rounded-full">
+                          <Bike className="w-3 h-3" />{p.vehicle ?? "—"}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3">{statusBadge(p.status)}</td>
+                      <td className="px-4 py-3">
+                        {p.userId ? (
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400">
+                            <CheckCircle className="w-3 h-3" />Linked
+                          </span>
+                        ) : (
+                          <button
+                            onClick={() => handleLinkUser(p)}
+                            disabled={linkingId === p._id}
+                            className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-400 hover:bg-amber-200 disabled:opacity-60 transition-colors"
+                            title="Click to auto-link user account by phone number"
+                          >
+                            {linkingId === p._id
+                              ? <Loader2 className="w-3 h-3 animate-spin" />
+                              : <AlertCircle className="w-3 h-3" />}
+                            {linkingId === p._id ? "Linking…" : "Link Account"}
+                          </button>
+                        )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <button
+                          onClick={() => handleToggleAvailability(p)}
+                          disabled={!!togglingId || p.status !== "active"}
+                          className="disabled:opacity-50"
+                          title={p.status !== "active" ? "Only active partners can be toggled" : undefined}
+                        >
+                          {togglingId === p._id
+                            ? <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+                            : p.isAvailable
+                              ? <ToggleRight className="w-6 h-6 text-green-500" />
+                              : <ToggleLeft className="w-6 h-6 text-muted-foreground" />
+                          }
+                        </button>
+                      </td>
+                      <td className="px-4 py-3 text-right font-medium">{p.ordersDelivered}</td>
+                      <td className="px-4 py-3 text-right font-medium">{formatINR(p.totalEarnings)}</td>
+                      <td className="px-5 py-3 text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button size="sm" variant="ghost" className="h-8 w-8 p-0" onClick={() => openEdit(p)} title="Edit">
+                            <Edit2 className="w-3.5 h-3.5" />
+                          </Button>
+                          <Button size="sm" variant="ghost" className="h-8 w-8 p-0 text-destructive hover:text-destructive hover:bg-destructive/10"
+                            onClick={() => handleDelete(p)} disabled={deletingId === p._id} title="Remove">
+                            {deletingId === p._id ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  )
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="px-5 py-3 border-t border-border bg-muted/20 text-xs text-muted-foreground flex items-center gap-2">
+            <Truck className="w-3.5 h-3.5" />
+            {filtered.length} partner{filtered.length !== 1 ? "s" : ""}
+            {search || statusFilter !== "all" ? ` matching filters` : " total"}
+            {" · "}{stats.active} active · {stats.available} available now
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── MANAGERS SECTION ────────────────────────────────────────────────────────
+interface City {
+  id: string;
+  name: string;
+  isActive: boolean;
+}
+
+interface Manager {
+  id: string;
+  name: string;
+  phone: string;
+  email: string | null;
+  status: "active" | "suspended";
+  assignedCities: Array<{ cityId: string; cityName: string }>;
+}
+
+function ManagersTab() {
+  const [managers, setManagers] = useState<Manager[]>([]);
+  const [cities, setCities] = useState<City[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  // Form states
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [selectedCities, setSelectedCities] = useState<string[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+
+  const fetchManagersAndCities = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [mgrRes, cityRes] = await Promise.all([
+        api.get<{ success: boolean; managers: Manager[] }>("/admin/managers"),
+        api.get<{ success: boolean; cities: City[] }>("/admin/cities")
+      ]);
+      setManagers(mgrRes.managers || []);
+      setCities(cityRes.cities || []);
+    } catch {
+      toast.error("Failed to load managers or cities");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchManagersAndCities();
+  }, [fetchManagersAndCities]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name || !phone) {
+      toast.error("Name and Phone are required");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await api.post("/admin/managers", {
+        name,
+        phone,
+        email: email || undefined,
+        cityIds: selectedCities
+      });
+      toast.success("Manager added/elevated successfully");
+      setShowAddForm(false);
+      setName("");
+      setPhone("");
+      setEmail("");
+      setSelectedCities([]);
+      fetchManagersAndCities();
+    } catch {
+      toast.error("Failed to onboard manager");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleToggleStatus = async (id: string, currentStatus: "active" | "suspended") => {
+    const newStatus = currentStatus === "active" ? "suspended" : "active";
+    try {
+      await api.patch(`/admin/managers/${id}`, { status: newStatus });
+      toast.success(`Manager ${newStatus === 'active' ? 'activated' : 'suspended'}`);
+      fetchManagersAndCities();
+    } catch {
+      toast.error("Failed to update status");
+    }
+  };
+
+  const handleRemoveManager = async (id: string) => {
+    if (!confirm("Are you sure you want to demote this manager? They will revert to a normal customer role.")) return;
+    try {
+      await api.delete(`/admin/managers/${id}`);
+      toast.success("Manager demoted successfully");
+      fetchManagersAndCities();
+    } catch {
+      toast.error("Failed to remove manager");
+    }
+  };
+
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-center">
+        <div>
+          <h2 className="text-2xl font-bold text-foreground">City Managers</h2>
+          <p className="text-xs text-muted-foreground mt-1">Assign managers to specific cities. Only assigned managers will see the Manager Panel on their profile.</p>
+        </div>
+        <Button onClick={() => setShowAddForm(!showAddForm)} className="rounded-xl bg-primary text-primary-foreground font-bold hover:bg-primary/95 flex items-center gap-1.5">
+          <Plus className="w-4.5 h-4.5" /> Onboard Manager
+        </Button>
+      </div>
+
+      <AnimatePresence>
+        {showAddForm && (
+          <motion.form
+            onSubmit={handleSubmit}
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -10 }}
+            className="bg-card border border-border p-6 rounded-3xl space-y-4 max-w-xl shadow-lg"
+          >
+            <div className="flex justify-between items-center mb-1">
+              <h4 className="font-extrabold text-sm text-foreground">Onboard/Elevate City Manager</h4>
+              <button type="button" onClick={() => setShowAddForm(false)} className="text-muted-foreground hover:text-foreground">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-muted-foreground uppercase">Full Name</label>
+                <Input placeholder="Manager Name" value={name} onChange={e => setName(e.target.value)} required />
+              </div>
+              <div className="space-y-1">
+                <label className="text-xs font-bold text-muted-foreground uppercase">Phone Number</label>
+                <Input placeholder="e.g. 9876543210" value={phone} onChange={e => setPhone(e.target.value)} required />
+              </div>
+              <div className="space-y-1 col-span-2">
+                <label className="text-xs font-bold text-muted-foreground uppercase">Email Address (Optional)</label>
+                <Input placeholder="email@example.com" type="email" value={email} onChange={e => setEmail(e.target.value)} />
+              </div>
+              <div className="col-span-2 space-y-2">
+                <label className="text-xs font-bold text-muted-foreground uppercase block mb-1">Assign Cities</label>
+                {cities.length === 0 ? (
+                  <p className="text-xs text-muted-foreground italic">No cities created. Please add cities first.</p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-2 max-h-36 overflow-y-auto p-2 bg-muted/40 border border-border rounded-xl">
+                    {cities.map(city => (
+                      <label key={city.id} className="flex items-center gap-2 text-xs font-semibold text-foreground cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedCities.includes(city.id)}
+                          onChange={e => {
+                            if (e.target.checked) {
+                              setSelectedCities([...selectedCities, city.id]);
+                            } else {
+                              setSelectedCities(selectedCities.filter(id => id !== city.id));
+                            }
+                          }}
+                          className="rounded text-primary focus:ring-0 w-4 h-4 cursor-pointer"
+                        />
+                        {city.name}
+                      </label>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button type="button" variant="ghost" onClick={() => setShowAddForm(false)}>Cancel</Button>
+              <Button type="submit" disabled={submitting} className="bg-primary text-primary-foreground font-bold">
+                {submitting ? "Processing..." : "Add Manager"}
+              </Button>
+            </div>
+          </motion.form>
+        )}
+      </AnimatePresence>
+
+      {loading && managers.length === 0 ? (
+        <div className="h-48 bg-card border border-border rounded-3xl animate-pulse flex items-center justify-center text-muted-foreground text-sm font-semibold">
+          Loading managers ledger...
+        </div>
+      ) : managers.length === 0 ? (
+        <div className="text-center py-16 bg-card border border-border/30 rounded-3xl text-muted-foreground">
+          No city managers configured. Tap Onboard Manager to assign.
+        </div>
+      ) : (
+        <div className="bg-card rounded-3xl border border-border/40 overflow-hidden shadow-sm">
+          <table className="w-full border-collapse text-left text-sm">
+            <thead className="bg-muted/40 border-b border-border/20 text-xs font-bold text-muted-foreground uppercase tracking-wider">
+              <tr>
+                <th className="p-4">Manager Info</th>
+                <th className="p-4">Phone</th>
+                <th className="p-4">Assigned Cities</th>
+                <th className="p-4">Status</th>
+                <th className="p-4 text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border/20">
+              {managers.map(m => (
+                <tr key={m.id} className="hover:bg-muted/5">
+                  <td className="p-4">
+                    <div className="font-bold text-foreground leading-snug">{m.name}</div>
+                    {m.email && <div className="text-[10px] text-muted-foreground">{m.email}</div>}
+                  </td>
+                  <td className="p-4 font-semibold text-muted-foreground">{m.phone}</td>
+                  <td className="p-4">
+                    <div className="flex flex-wrap gap-1">
+                      {m.assignedCities && m.assignedCities.length > 0 ? (
+                        m.assignedCities.map(ac => (
+                          <Badge key={ac.cityId} className="bg-primary/10 text-primary border-none text-[9px] font-bold">
+                            {ac.cityName || ac.cityId}
+                          </Badge>
+                        ))
+                      ) : (
+                        <span className="text-xs text-muted-foreground italic">None (Global access check)</span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="p-4">
+                    <Badge className={`border-none font-bold text-[9px] uppercase ${m.status === "active" ? "bg-green-500/10 text-green-500" : "bg-red-500/10 text-red-500"}`}>
+                      {m.status}
+                    </Badge>
+                  </td>
+                  <td className="p-4 text-right space-x-1.5">
+                    <Button size="sm" variant="ghost" onClick={() => handleToggleStatus(m.id, m.status)} className="rounded-xl text-xs">
+                      {m.status === "active" ? "Suspend" : "Activate"}
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => handleRemoveManager(m.id)} className="rounded-xl text-xs text-red-500 hover:bg-red-500/10">
+                      Remove
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface CarouselImage {
+  imageUrl: string;
+  redirectSlug?: string;
+}
+
+interface CategoryCell {
+  imageUrl: string;
+  name: string;
+  categorySlug: string;
+}
+
+interface LayoutBlock {
+  id: string;
+  type: 'banner_carousel' | 'category_grid' | 'product_slider' | 'single_banner';
+  sortOrder: number;
+  data: {
+    title?: string;
+    subtitle?: string;
+    imageUrl?: string;
+    redirectSlug?: string;
+    images?: CarouselImage[];
+    categories?: CategoryCell[];
+    productIds?: string[];
+    products?: Array<{
+      id: string;
+      name: string;
+      price: number;
+      discountedPrice?: number | null;
+      imageUrl: string;
+      stockStatus: string;
+    }>;
+  };
+}
+
+interface CampaignConfig {
+  isActive: boolean;
+  tabName: string;
+  theme: {
+    backgroundColor: string;
+    textColor: string;
+    accentColor: string;
+    searchPlaceholders?: string[];
+    badgeTitle?: string;
+    badgeSubtitle?: string;
+    badgeEmoji?: string;
+    badgeBgColor?: string;
+    badgeTextColor?: string;
+    tabSubtitle?: string;
+    tabEmoji?: string;
+  };
+  layoutBlocks: LayoutBlock[];
+}
+
+function SeasonalCampaignTab() {
+  const [config, setConfig] = useState<CampaignConfig | null>(null);
+  const [categoriesList, setCategoriesList] = useState<ApiCategory[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [uploadingBlockId, setUploadingBlockId] = useState<string | null>(null);
+  const [uploadingSlideIndex, setUploadingSlideIndex] = useState<number | null>(null);
+
+  // Product Search State per Slider Block
+  const [productQuery, setProductQuery] = useState<Record<string, string>>({});
+  const [searchResults, setSearchResults] = useState<Record<string, any[]>>({});
+
+  const defaultSeasonalCampaign: CampaignConfig = {
+  isActive: true,
+  tabName: "Festival Season",
+  theme: {
+    backgroundColor: "#0d1117",
+    textColor: "#f8fafc",
+    accentColor: "#6964fe",
+    searchPlaceholders: ["Search sweets", "Dry fruits gift pack", "Festive specials"],
+    badgeTitle: "Special Festive Season",
+    badgeSubtitle: "Mega Discounts Across Balurghat",
+    badgeEmoji: "🎉",
+    badgeBgColor: "#1e1b4b",
+    badgeTextColor: "#a5b4fc",
+    tabSubtitle: "Celebration Specials",
+    tabEmoji: "✨"
+  },
+  layoutBlocks: []
+};
+
+  const defaultCafePageConfig: CafePageConfig = {
+  isActive: true,
+  theme: {
+    backgroundColor: "#11141c",
+    textColor: "#ffffff",
+    accentColor: "#f97316"
+  },
+  layoutBlocks: []
+};
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [campRes, catRes] = await Promise.all([
+        api.get<{ success: boolean; campaign: CafePageConfig }>("/cafe-config"),
+        api.get<{ success: boolean; categories: ApiCategory[] }>("/categories/all")
+      ]);
+      const fetched = campRes?.campaign;
+      if (fetched) {
+        setConfig({
+          ...defaultCafePageConfig,
+          ...fetched,
+          theme: {
+            ...defaultCafePageConfig.theme,
+            ...(fetched.theme || {})
+          },
+          layoutBlocks: Array.isArray(fetched.layoutBlocks) ? fetched.layoutBlocks : []
+        });
+      } else {
+        setConfig(defaultCafePageConfig);
+      }
+      setCategoriesList(Array.isArray(catRes?.categories) ? catRes.categories : []);
+    } catch {
+      setConfig(defaultCafePageConfig);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  const handleSave = async (updatedConfig: CafePageConfig) => {
+    setSaving(true);
+    try {
+      const res = await api.post<{ success: boolean; campaign: CafePageConfig }>("/cafe-config", updatedConfig);
+      setConfig(res.campaign);
+      toast.success("Cafe Page layouts saved successfully");
+    } catch {
+      toast.error("Failed to save Cafe configurations");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAddBlock = (type: CafeLayoutBlock['type']) => {
+    if (!config) return;
+    const blocks = [...(config.layoutBlocks || [])];
+    
+    let defaultData: any = {};
+    if (type === 'banner_carousel') {
+      defaultData = { images: [] };
+    } else if (type === 'category_grid') {
+      defaultData = { title: "Shop by Category", categories: [] };
+    } else if (type === 'product_slider') {
+      defaultData = { title: "Featured Items", subtitle: "Best selections", productIds: [], products: [] };
+    } else if (type === 'shop_slider') {
+      defaultData = { title: "Top Restaurants", subtitle: "Highly rated cafes", shopIds: [], shops: [] };
+    } else if (type === 'single_banner') {
+      defaultData = { imageUrl: "", redirectSlug: "" };
+    }
+
+    const newBlock: CafeLayoutBlock = {
+      id: "block_" + Date.now() + "_" + Math.random().toString(36).substring(2, 7),
+      type,
+      sortOrder: blocks.length + 1,
+      data: defaultData
+    };
+
+    const updated = { ...config, layoutBlocks: [...blocks, newBlock] };
+    setConfig(updated);
+    handleSave(updated);
+  };
+
+  const handleDeleteBlock = (blockId: string) => {
+    if (!config || !confirm("Delete this layout block?")) return;
+    const updated = {
+      ...config,
+      layoutBlocks: (config.layoutBlocks || []).filter(b => b.id !== blockId)
+    };
+    setConfig(updated);
+    handleSave(updated);
+  };
+
+  const handleMoveBlock = (index: number, direction: 'up' | 'down') => {
+    if (!config) return;
+    const blocks = [...(config.layoutBlocks || [])];
+    const targetIdx = direction === 'up' ? index - 1 : index + 1;
+    if (targetIdx < 0 || targetIdx >= blocks.length) return;
+
+    const temp = blocks[index];
+    blocks[index] = blocks[targetIdx];
+    blocks[targetIdx] = temp;
+
+    blocks.forEach((b, idx) => {
+      b.sortOrder = idx + 1;
+    });
+
+    const updated = { ...config, layoutBlocks: blocks };
+    setConfig(updated);
+    handleSave(updated);
+  };
+
+  const handleUpdateBlockData = (blockId: string, updatedFields: any) => {
+    if (!config) return;
+    const updatedBlocks = (config.layoutBlocks || []).map(b => {
+      if (b.id === blockId) {
+        return { ...b, data: { ...b.data, ...updatedFields } };
+      }
+      return b;
+    });
+    const updated = { ...config, layoutBlocks: updatedBlocks };
+    setConfig(updated);
+  };
+
+  const uploadImage = async (file: File): Promise<string | null> => {
+    try {
+      const fd = new FormData();
+      fd.append("image", file);
+      const { access } = api.getTokens();
+      const res = await fetch("/api/upload/banner-image", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${access ?? ""}` },
+        body: fd,
+      });
+      const data = await res.json() as { success: boolean; imageUrl: string };
+      return data.success ? data.imageUrl : null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Product Autocomplete for products block
+  const handleProductSearch = async (blockId: string, query: string) => {
+    setProductQuery(prev => ({ ...prev, [blockId]: query }));
+    if (!query.trim()) {
+      setSearchResults(prev => ({ ...prev, [blockId]: [] }));
+      return;
+    }
+    try {
+      const res = await api.get<{ success: boolean; products: any[] }>(`/products?search=${encodeURIComponent(query)}&status=all&limit=8`);
+      setSearchResults(prev => ({ ...prev, [blockId]: res.products || [] }));
+    } catch {
+      setSearchResults(prev => ({ ...prev, [blockId]: [] }));
+    }
+  };
+
+  const handleAddProductToSlider = (blockId: string, product: any) => {
+    if (!config) return;
+    const block = (config.layoutBlocks || []).find(b => b.id === blockId);
+    if (!block || block.type !== 'product_slider') return;
+
+    const ids = [...(block.data.productIds || [])];
+    if (ids.includes(product.id)) {
+      toast.error("Product already added to this slider");
+      return;
+    }
+
+    ids.push(product.id);
+    const productsList = [...(block.data.products || [])];
+    productsList.push({
+      id: product.id,
+      name: product.name,
+      price: product.price,
+      discountedPrice: product.discountedPrice,
+      imageUrl: product.images?.[0] || "",
+      stockStatus: product.stock > 0 ? "in_stock" : "out_of_stock"
+    });
+
+    handleUpdateBlockData(blockId, { productIds: ids, products: productsList });
+    setProductQuery(prev => ({ ...prev, [blockId]: "" }));
+    setSearchResults(prev => ({ ...prev, [blockId]: [] }));
+  };
+
+  const handleRemoveProductFromSlider = (blockId: string, productId: string) => {
+    if (!config) return;
+    const block = (config.layoutBlocks || []).find(b => b.id === blockId);
+    if (!block || block.type !== 'product_slider') return;
+
+    const ids = (block.data.productIds || []).filter(id => id !== productId);
+    const productsList = (block.data.products || []).filter(p => p.id !== productId);
+
+    handleUpdateBlockData(blockId, { productIds: ids, products: productsList });
+  };
+
+  // Shop/Restaurant Autocomplete for shop blocks
+  const handleShopSearch = async (blockId: string, query: string) => {
+    setShopQuery(prev => ({ ...prev, [blockId]: query }));
+    if (!query.trim()) {
+      setShopSearchResults(prev => ({ ...prev, [blockId]: [] }));
+      return;
+    }
+    try {
+      const res = await api.get<{ success: boolean; shops: any[] }>(`/shops?search=${encodeURIComponent(query)}&limit=8`);
+      setShopSearchResults(prev => ({ ...prev, [blockId]: res.shops || [] }));
+    } catch {
+      setShopSearchResults(prev => ({ ...prev, [blockId]: [] }));
+    }
+  };
+
+  const handleAddShopToSlider = (blockId: string, shop: any) => {
+    if (!config) return;
+    const block = (config.layoutBlocks || []).find(b => b.id === blockId);
+    if (!block || block.type !== 'shop_slider') return;
+
+    const ids = [...(block.data.shopIds || [])];
+    if (ids.includes(shop.id)) {
+      toast.error("Shop/Restaurant already added to this slider");
+      return;
+    }
+
+    ids.push(shop.id);
+    const shopsList = [...(block.data.shops || [])];
+    shopsList.push({
+      id: shop.id,
+      name: shop.shopName,
+      imageUrl: shop.image || "",
+      rating: shop.rating ?? 0,
+      isOpen: shop.isOpen ?? false,
+      status: shop.status
+    });
+
+    handleUpdateBlockData(blockId, { shopIds: ids, shops: shopsList });
+    setShopQuery(prev => ({ ...prev, [blockId]: "" }));
+    setShopSearchResults(prev => ({ ...prev, [blockId]: [] }));
+  };
+
+  const handleRemoveShopFromSlider = (blockId: string, shopId: string) => {
+    if (!config) return;
+    const block = (config.layoutBlocks || []).find(b => b.id === blockId);
+    if (!block || block.type !== 'shop_slider') return;
+
+    const ids = (block.data.shopIds || []).filter(id => id !== shopId);
+    const shopsList = (block.data.shops || []).filter(s => s.id !== shopId);
+
+    handleUpdateBlockData(blockId, { shopIds: ids, shops: shopsList });
+  };
+
+  const activeConfig = config || defaultCafePageConfig;
+  if (loading && !config) {
+    return (
+      <div className="h-64 bg-card border border-border rounded-3xl animate-pulse flex items-center justify-center text-muted-foreground text-sm font-semibold">
+        Loading Cafe Manager details...
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex justify-between items-center flex-wrap gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-foreground">Cafe Manager</h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            Build and arrange dynamic layout grids for the Cafe & Food storefront page.
+          </p>
+        </div>
+        <div className="flex items-center gap-2 bg-card px-4 py-2 rounded-2xl border border-border/40 shadow-sm">
+          <span className="text-xs font-semibold text-muted-foreground">Cafe Tab Active:</span>
+          <button
+            onClick={() => handleSave({ ...config, isActive: !config.isActive })}
+            className={`text-xs font-bold px-3 py-1 rounded-xl transition-colors ${
+              config.isActive
+                ? "bg-green-500/10 text-green-600 hover:bg-green-500/20"
+                : "bg-red-500/10 text-red-500 hover:bg-red-500/20"
+            }`}
+          >
+            {config.isActive ? "● Active" : "○ Offline"}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Settings Column */}
+        <div className="lg:col-span-1 space-y-6">
+          <div className="bg-card rounded-3xl border border-border/40 p-6 space-y-4 shadow-sm">
+            <h3 className="font-bold text-base text-foreground pb-2 border-b border-border/30">Theme Details</h3>
+            
+            <div className="grid grid-cols-3 gap-2 pt-2">
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold text-muted-foreground block">Top Hero Banner Color</label>
+                <div className="flex gap-1.5 items-center">
+                  <input
+                    type="color"
+                    value={config.theme.backgroundColor}
+                    onChange={e => setConfig({
+                      ...config,
+                      theme: { ...config.theme, backgroundColor: e.target.value }
+                    })}
+                    className="w-7 h-7 rounded-lg border-none bg-transparent cursor-pointer"
+                  />
+                  <span className="text-[10px] font-mono text-muted-foreground uppercase">{config.theme.backgroundColor}</span>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold text-muted-foreground block">Typography</label>
+                <div className="flex gap-1.5 items-center">
+                  <input
+                    type="color"
+                    value={config.theme.textColor}
+                    onChange={e => setConfig({
+                      ...config,
+                      theme: { ...config.theme, textColor: e.target.value }
+                    })}
+                    className="w-7 h-7 rounded-lg border-none bg-transparent cursor-pointer"
+                  />
+                  <span className="text-[10px] font-mono text-muted-foreground uppercase">{config.theme.textColor}</span>
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <label className="text-[10px] font-semibold text-muted-foreground block">Accent Color</label>
+                <div className="flex gap-1.5 items-center">
+                  <input
+                    type="color"
+                    value={config.theme.accentColor}
+                    onChange={e => setConfig({
+                      ...config,
+                      theme: { ...config.theme, accentColor: e.target.value }
+                    })}
+                    className="w-7 h-7 rounded-lg border-none bg-transparent cursor-pointer"
+                  />
+                  <span className="text-[10px] font-mono text-muted-foreground uppercase">{config.theme.accentColor}</span>
+                </div>
+              </div>
+            </div>
+
+            <Button
+              onClick={() => handleSave(config)}
+              disabled={saving}
+              className="w-full rounded-xl bg-primary text-primary-foreground font-bold mt-2 shadow-none"
+            >
+              {saving ? "Saving configs..." : "Save Settings"}
+            </Button>
+          </div>
+        </div>
+
+        {/* Dynamic Page Layout Blocks Builder */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* Controls to Add New Blocks */}
+          <div className="bg-card rounded-3xl border border-border/40 p-4 shadow-sm flex items-center justify-between gap-3 flex-wrap">
+            <div>
+              <h3 className="font-bold text-sm text-foreground">Block Assembly Manager</h3>
+              <p className="text-[10px] text-muted-foreground">Select a module type below to append it to the viewport layout.</p>
+            </div>
+            
+            <div className="flex gap-2 flex-wrap">
+              <Button
+                onClick={() => handleAddBlock('banner_carousel')}
+                size="sm"
+                variant="outline"
+                className="rounded-xl shadow-none text-xs flex items-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" /> Carousel
+              </Button>
+              <Button
+                onClick={() => handleAddBlock('category_grid')}
+                size="sm"
+                variant="outline"
+                className="rounded-xl shadow-none text-xs flex items-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" /> Cat Grid
+              </Button>
+              <Button
+                onClick={() => handleAddBlock('product_slider')}
+                size="sm"
+                variant="outline"
+                className="rounded-xl shadow-none text-xs flex items-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" /> Prod Slider
+              </Button>
+              <Button
+                onClick={() => handleAddBlock('shop_slider')}
+                size="sm"
+                variant="outline"
+                className="rounded-xl shadow-none text-xs flex items-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" /> Restaurant Slider
+              </Button>
+              <Button
+                onClick={() => handleAddBlock('single_banner')}
+                size="sm"
+                variant="outline"
+                className="rounded-xl shadow-none text-xs flex items-center gap-1"
+              >
+                <Plus className="w-3.5 h-3.5" /> Banner
+              </Button>
+            </div>
+          </div>
+
+          {/* Blocks Render Stack */}
+          {(config.layoutBlocks || []).length === 0 ? (
+            <div className="text-center py-20 border-2 border-dashed border-border/60 rounded-3xl bg-card text-muted-foreground text-sm">
+              Your Cafe & Food page layout is currently empty. Use the assembly buttons above to add modules.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {(config.layoutBlocks || []).map((block, idx) => (
+                <div key={block.id} className="bg-card border border-border/60 rounded-3xl p-5 shadow-sm space-y-4 relative">
+                  {/* Block Header Info & Controls */}
+                  <div className="flex justify-between items-center border-b border-border/30 pb-2">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-mono bg-primary/10 text-primary px-2 py-0.5 rounded font-bold uppercase">
+                        #{idx + 1} {block.type.replace('_', ' ')}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => handleMoveBlock(idx, "up")}
+                        disabled={idx === 0}
+                        className="p-1 rounded-lg text-muted-foreground hover:bg-muted disabled:opacity-30"
+                        title="Move Up"
+                      >
+                        <ChevronUp className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleMoveBlock(idx, "down")}
+                        disabled={idx === (config.layoutBlocks || []).length - 1}
+                        className="p-1 rounded-lg text-muted-foreground hover:bg-muted disabled:opacity-30"
+                        title="Move Down"
+                      >
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (config) {
+                            handleSave(config);
+                          }
+                        }}
+                        className="p-1 rounded-lg text-green-600 hover:bg-green-50 dark:hover:bg-green-950/20"
+                        title="Save Changes"
+                      >
+                        <CheckCircle className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteBlock(block.id)}
+                        className="p-1 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-950/20"
+                        title="Delete Block"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Block specific details */}
+                  {/* 1. Carousel Block Layout */}
+                  {block.type === 'banner_carousel' && (
+                    <div className="space-y-3">
+                      <div className="flex justify-between items-center">
+                        <label className="text-xs font-semibold text-muted-foreground">Carousel Slides List</label>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            const current = block.data.images || [];
+                            handleUpdateBlockData(block.id, { images: [...current, { imageUrl: "", redirectSlug: "" }] });
+                          }}
+                          className="text-xs font-bold text-primary h-7 px-2"
+                        >
+                          + Add Slide
+                        </Button>
+                      </div>
+
+                      <div className="space-y-3">
+                        {(block.data.images || []).map((slide, slideIdx) => (
+                          <div key={slideIdx} className="border border-border/40 rounded-xl p-3 bg-muted/10 grid grid-cols-1 md:grid-cols-2 gap-3 relative">
+                            <div className="space-y-1">
+                              <label className="text-[10px] text-muted-foreground font-semibold">Image Asset Link</label>
+                              <div className="flex gap-2">
+                                <Input
+                                  value={slide.imageUrl}
+                                  onChange={e => {
+                                    const list = [...(block.data.images || [])];
+                                    list[slideIdx].imageUrl = e.target.value;
+                                    handleUpdateBlockData(block.id, { images: list });
+                                  }}
+                                  placeholder="https://example.com/banner.jpg"
+                                  className="h-8 text-xs neu-inset border-none bg-background flex-1"
+                                />
+                                <div className="relative">
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    onChange={async e => {
+                                      const file = e.target.files?.[0];
+                                      if (file) {
+                                        setUploadingBlockId(block.id);
+                                        setUploadingSlideIndex(slideIdx);
+                                        const url = await uploadImage(file);
+                                        if (url) {
+                                          const list = [...(block.data.images || [])];
+                                          list[slideIdx].imageUrl = url;
+                                          handleUpdateBlockData(block.id, { images: list });
+                                          toast.success("Uploaded carousel banner asset");
+                                        } else {
+                                          toast.error("Upload failed");
+                                        }
+                                        setUploadingBlockId(null);
+                                        setUploadingSlideIndex(null);
+                                      }
+                                    }}
+                                    id={`cafe-carousel-up-${block.id}-${slideIdx}`}
+                                    className="hidden"
+                                  />
+                                  <Button
+                                    asChild
+                                    variant="outline"
+                                    className="rounded-lg h-8 px-3"
+                                    disabled={uploadingBlockId === block.id && uploadingSlideIndex === slideIdx}
+                                  >
+                                    <label htmlFor={`cafe-carousel-up-${block.id}-${slideIdx}`} className="cursor-pointer">
+                                      {uploadingBlockId === block.id && uploadingSlideIndex === slideIdx ? "..." : "Upload"}
+                                    </label>
+                                  </Button>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[10px] text-muted-foreground font-semibold">Redirect Link Category Slug</label>
+                              <select
+                                value={slide.redirectSlug || ""}
+                                onChange={e => {
+                                  const list = [...(block.data.images || [])];
+                                  list[slideIdx].redirectSlug = e.target.value;
+                                  handleUpdateBlockData(block.id, { images: list });
+                                }}
+                                className="w-full h-8 px-2 rounded-lg bg-background neu-inset border-none text-xs text-foreground appearance-none cursor-pointer"
+                              >
+                                <option value="">Select redirect target</option>
+                                {categoriesList.map(cat => (
+                                  <option key={cat._id} value={cat.slug}>{cat.name}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <button
+                              onClick={() => {
+                                const list = (block.data.images || []).filter((_, i) => i !== slideIdx);
+                                handleUpdateBlockData(block.id, { images: list });
+                              }}
+                              className="absolute top-1.5 right-1.5 text-xs text-red-500 hover:bg-red-50 p-0.5 rounded"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 2. Category Grid Block Layout */}
+                  {block.type === 'category_grid' && (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-xs font-semibold text-muted-foreground">Grid Section Title</label>
+                          <Input
+                            value={block.data.title || ""}
+                            onChange={e => handleUpdateBlockData(block.id, { title: e.target.value })}
+                            placeholder="e.g. Shop by Category"
+                            className="h-9 neu-inset border-none bg-background text-xs"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex justify-between items-center border-t border-border/20 pt-2">
+                        <label className="text-xs font-semibold text-muted-foreground">Categories list cells</label>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            const current = block.data.categories || [];
+                            handleUpdateBlockData(block.id, { categories: [...current, { imageUrl: "", name: "", categorySlug: "" }] });
+                          }}
+                          className="text-xs font-bold text-primary h-7 px-2"
+                        >
+                          + Add Category Cell
+                        </Button>
+                      </div>
+
+                      <div className="space-y-3">
+                        {(block.data.categories || []).map((cell, cellIdx) => (
+                          <div key={cellIdx} className="border border-border/40 rounded-xl p-3 bg-muted/10 grid grid-cols-1 md:grid-cols-3 gap-3 relative">
+                            <div className="space-y-1">
+                              <label className="text-[10px] text-muted-foreground font-semibold">Cell Label Name</label>
+                              <Input
+                                value={cell.name}
+                                onChange={e => {
+                                  const list = [...(block.data.categories || [])];
+                                  list[cellIdx].name = e.target.value;
+                                  handleUpdateBlockData(block.id, { categories: list });
+                                }}
+                                placeholder="e.g. Snacks"
+                                className="h-8 text-xs neu-inset border-none bg-background"
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[10px] text-muted-foreground font-semibold">Icon Image</label>
+                              <div className="flex gap-2">
+                                <Input
+                                  value={cell.imageUrl}
+                                  onChange={e => {
+                                    const list = [...(block.data.categories || [])];
+                                    list[cellIdx].imageUrl = e.target.value;
+                                    handleUpdateBlockData(block.id, { categories: list });
+                                  }}
+                                  placeholder="https://example.com/icon.png"
+                                  className="h-8 text-xs neu-inset border-none bg-background flex-1"
+                                />
+                                <div className="relative">
+                                  <input
+                                    type="file"
+                                    accept="image/*"
+                                    onChange={async e => {
+                                      const file = e.target.files?.[0];
+                                      if (file) {
+                                        setUploadingBlockId(block.id);
+                                        setUploadingSlideIndex(cellIdx);
+                                        const url = await uploadImage(file);
+                                        if (url) {
+                                          const list = [...(block.data.categories || [])];
+                                          list[cellIdx].imageUrl = url;
+                                          handleUpdateBlockData(block.id, { categories: list });
+                                          toast.success("Uploaded cell thumbnail");
+                                        } else {
+                                          toast.error("Upload failed");
+                                        }
+                                        setUploadingBlockId(null);
+                                        setUploadingSlideIndex(null);
+                                      }
+                                    }}
+                                    id={`cafe-cell-up-${block.id}-${cellIdx}`}
+                                    className="hidden"
+                                  />
+                                  <Button
+                                    asChild
+                                    variant="outline"
+                                    className="rounded-lg h-8 px-3"
+                                    disabled={uploadingBlockId === block.id && uploadingSlideIndex === cellIdx}
+                                  >
+                                    <label htmlFor={`cafe-cell-up-${block.id}-${cellIdx}`} className="cursor-pointer">
+                                      {uploadingBlockId === block.id && uploadingSlideIndex === cellIdx ? "..." : "Upload"}
+                                    </label>
+                                  </Button>
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[10px] text-muted-foreground font-semibold">Target Category Slug</label>
+                              <select
+                                value={cell.categorySlug || ""}
+                                onChange={e => {
+                                  const list = [...(block.data.categories || [])];
+                                  list[cellIdx].categorySlug = e.target.value;
+                                  handleUpdateBlockData(block.id, { categories: list });
+                                }}
+                                className="w-full h-8 px-2 rounded-lg bg-background neu-inset border-none text-xs text-foreground appearance-none cursor-pointer"
+                              >
+                                <option value="">Select target category</option>
+                                {categoriesList.map(cat => (
+                                  <option key={cat._id} value={cat.slug}>{cat.name}</option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <button
+                              onClick={() => {
+                                const list = (block.data.categories || []).filter((_, i) => i !== cellIdx);
+                                handleUpdateBlockData(block.id, { categories: list });
+                              }}
+                              className="absolute top-1.5 right-1.5 text-xs text-red-500 hover:bg-red-50 p-0.5 rounded"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 3. Product Slider Block Layout */}
+                  {block.type === 'product_slider' && (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-xs font-semibold text-muted-foreground">Slider Title</label>
+                          <Input
+                            value={block.data.title || ""}
+                            onChange={e => handleUpdateBlockData(block.id, { title: e.target.value })}
+                            placeholder="e.g. Best Sellers"
+                            className="h-9 neu-inset border-none bg-background text-xs"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-semibold text-muted-foreground">Slider Subtitle</label>
+                          <Input
+                            value={block.data.subtitle || ""}
+                            onChange={e => handleUpdateBlockData(block.id, { subtitle: e.target.value })}
+                            placeholder="e.g. Premium deals selected just for you"
+                            className="h-9 neu-inset border-none bg-background text-xs"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Products search container */}
+                      <div className="relative pt-2">
+                        <label className="text-xs font-semibold text-muted-foreground block mb-1">Add products to this slider</label>
+                        <div className="relative">
+                          <Search className="absolute left-3 top-2.5 w-3.5 h-3.5 text-muted-foreground" />
+                          <Input
+                            value={productQuery[block.id] || ""}
+                            onChange={e => handleProductSearch(block.id, e.target.value)}
+                            placeholder="Type product name to search..."
+                            className="pl-9 h-9 text-xs neu-inset border-none bg-background"
+                          />
+                        </div>
+
+                        {/* Search Matches dropdown */}
+                        {(searchResults[block.id] || []).length > 0 && (
+                          <div className="absolute left-0 right-0 top-18 bg-card border border-border rounded-xl shadow-lg z-30 max-h-48 overflow-y-auto divide-y divide-border/40">
+                            {(searchResults[block.id] || []).map((p: any) => (
+                              <button
+                                key={p.id}
+                                type="button"
+                                onClick={() => handleAddProductToSlider(block.id, p)}
+                                className="w-full p-2.5 text-left text-xs hover:bg-muted flex items-center gap-2"
+                              >
+                                <div className="w-8 h-8 rounded border border-border overflow-hidden shrink-0">
+                                  {p.images?.[0] ? <img src={p.images[0]} className="w-full h-full object-cover" /> : null}
+                                </div>
+                                <div className="flex-1 truncate">
+                                  <div className="font-semibold truncate text-foreground">{p.name}</div>
+                                  <div className="text-[10px] text-muted-foreground">₹{p.price} · stock: {p.stock}</div>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Configured Products stack */}
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {(block.data.products || []).length === 0 ? (
+                          <span className="text-[10px] text-muted-foreground italic">No products added. Use the search field above.</span>
+                        ) : (
+                          (block.data.products || []).map((p: any) => (
+                            <div key={p.id} className="bg-background border border-border/40 pl-1.5 pr-1 py-1 rounded-xl flex items-center gap-1.5 max-w-[200px]">
+                              <div className="w-5 h-5 rounded overflow-hidden bg-muted border border-border shrink-0">
+                                {p.imageUrl ? <img src={p.imageUrl} className="w-full h-full object-cover" /> : null}
+                              </div>
+                              <div className="flex-1 truncate min-w-0">
+                                <div className="text-[9px] font-bold text-foreground truncate leading-none mb-0.5">{p.name}</div>
+                                <div className="text-[8px] text-muted-foreground leading-none">₹{p.price}</div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveProductFromSlider(block.id, p.id)}
+                                className="text-muted-foreground hover:text-red-500 p-0.5 rounded"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 4. Restaurant/Shop Slider Block Layout */}
+                  {block.type === 'shop_slider' && (
+                    <div className="space-y-3">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-xs font-semibold text-muted-foreground">Slider Title</label>
+                          <Input
+                            value={block.data.title || ""}
+                            onChange={e => handleUpdateBlockData(block.id, { title: e.target.value })}
+                            placeholder="e.g. Popular Cafes"
+                            className="h-9 neu-inset border-none bg-background text-xs"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs font-semibold text-muted-foreground">Slider Subtitle</label>
+                          <Input
+                            value={block.data.subtitle || ""}
+                            onChange={e => handleUpdateBlockData(block.id, { subtitle: e.target.value })}
+                            placeholder="e.g. Fast delivery on top local restaurants"
+                            className="h-9 neu-inset border-none bg-background text-xs"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Shops search container */}
+                      <div className="relative pt-2">
+                        <label className="text-xs font-semibold text-muted-foreground block mb-1">Add shops/cafes to this slider</label>
+                        <div className="relative">
+                          <Search className="absolute left-3 top-2.5 w-3.5 h-3.5 text-muted-foreground" />
+                          <Input
+                            value={shopQuery[block.id] || ""}
+                            onChange={e => handleShopSearch(block.id, e.target.value)}
+                            placeholder="Type restaurant/shop name to search..."
+                            className="pl-9 h-9 text-xs neu-inset border-none bg-background"
+                          />
+                        </div>
+
+                        {/* Search Matches dropdown */}
+                        {(shopSearchResults[block.id] || []).length > 0 && (
+                          <div className="absolute left-0 right-0 top-18 bg-card border border-border rounded-xl shadow-lg z-30 max-h-48 overflow-y-auto divide-y divide-border/40">
+                            {(shopSearchResults[block.id] || []).map((s: any) => (
+                              <button
+                                key={s.id}
+                                type="button"
+                                onClick={() => handleAddShopToSlider(block.id, s)}
+                                className="w-full p-2.5 text-left text-xs hover:bg-muted flex items-center gap-2"
+                              >
+                                <div className="w-8 h-8 rounded border border-border overflow-hidden shrink-0">
+                                  {s.image ? <img src={s.image} className="w-full h-full object-cover" /> : null}
+                                </div>
+                                <div className="flex-1 truncate">
+                                  <div className="font-semibold truncate text-foreground">{s.shopName}</div>
+                                  <div className="text-[10px] text-muted-foreground">Rating: {s.rating} · status: {s.status}</div>
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Configured Shops stack */}
+                      <div className="flex flex-wrap gap-1.5 pt-1">
+                        {(block.data.shops || []).length === 0 ? (
+                          <span className="text-[10px] text-muted-foreground italic">No shops added. Use the search field above.</span>
+                        ) : (
+                          (block.data.shops || []).map((s: any) => (
+                            <div key={s.id} className="bg-background border border-border/40 pl-1.5 pr-1 py-1 rounded-xl flex items-center gap-1.5 max-w-[200px]">
+                              <div className="w-5 h-5 rounded overflow-hidden bg-muted border border-border shrink-0">
+                                {s.imageUrl ? <img src={s.imageUrl} className="w-full h-full object-cover" /> : null}
+                              </div>
+                              <div className="flex-1 truncate min-w-0">
+                                <div className="text-[9px] font-bold text-foreground truncate leading-none mb-0.5">{s.name}</div>
+                                <div className="text-[8px] text-muted-foreground leading-none">Rating: {s.rating}</div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => handleRemoveShopFromSlider(block.id, s.id)}
+                                className="text-muted-foreground hover:text-red-500 p-0.5 rounded"
+                              >
+                                ✕
+                              </button>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 5. Single Banner Block Layout */}
+                  {block.type === 'single_banner' && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-xs font-semibold text-muted-foreground">Banner Image link</label>
+                        <div className="flex gap-2">
+                          <Input
+                            value={block.data.imageUrl || ""}
+                            onChange={e => handleUpdateBlockData(block.id, { imageUrl: e.target.value })}
+                            placeholder="https://example.com/banner.png"
+                            className="h-9 neu-inset border-none bg-background text-xs flex-1"
+                          />
+                          <div className="relative">
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={async e => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  setUploadingBlockId(block.id);
+                                  const url = await uploadImage(file);
+                                  if (url) {
+                                    handleUpdateBlockData(block.id, { imageUrl: url });
+                                    toast.success("Uploaded banner image");
+                                  } else {
+                                    toast.error("Upload failed");
+                                  }
+                                  setUploadingBlockId(null);
+                                }
+                              }}
+                              id={`cafe-single-up-${block.id}`}
+                              className="hidden"
+                            />
+                            <Button
+                              asChild
+                              variant="outline"
+                              className="rounded-lg h-9 px-3 text-xs"
+                              disabled={uploadingBlockId === block.id}
+                            >
+                              <label htmlFor={`cafe-single-up-${block.id}`} className="cursor-pointer">
+                                {uploadingBlockId === block.id ? "..." : "Upload"}
+                              </label>
+                            </Button>
+                          </div>
+                        </div>
+                        {block.data.imageUrl && (
+                          <div className="mt-2 w-24 h-14 rounded-xl border border-border overflow-hidden bg-muted relative">
+                            <img src={block.data.imageUrl} className="w-full h-full object-cover" />
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-1">
+                        <label className="text-xs font-semibold text-muted-foreground">Redirect Link Category Slug</label>
+                        <select
+                          value={block.data.redirectSlug || ""}
+                          onChange={e => handleUpdateBlockData(block.id, { redirectSlug: e.target.value })}
+                          className="w-full h-9 px-3 rounded-xl bg-background neu-inset border-none text-xs text-foreground appearance-none cursor-pointer"
+                        >
+                          <option value="">Select target category</option>
+                          {categoriesList.map(cat => (
+                            <option key={cat._id} value={cat.slug}>{cat.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+

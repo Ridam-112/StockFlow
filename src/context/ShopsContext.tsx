@@ -1,0 +1,229 @@
+import React, { createContext, useState, useEffect, useCallback, useContext, useRef, useMemo } from "react";
+import { api } from "@/lib/api";
+import { AuthContext } from "@/context/AuthContext";
+
+export interface ShopListing {
+  id: string;
+  storeName: string;
+  ownerName: string;
+  category: string;
+  shopType?: string;
+  slug?: string;
+  verificationStatus?: "unverified" | "pending" | "verified" | "suspended" | string;
+  claimStatus?: "claimed" | "unclaimed" | string;
+  description?: string;
+  banner?: string;
+  city: string;
+  pincode: string;
+  phone: string;
+  isOpen: boolean;
+  rating: number;
+  totalOrders: number;
+  totalRevenue: number;
+  commissionRate: number;
+  image: string;
+  status: string;
+  eta: string;
+  packagingCharge?: number;
+  gstEnabled?: boolean;
+  gstRate?: number;
+  address?: Record<string, any>;
+  lat?: number;
+  lng?: number;
+  googleBusinessUrl?: string;
+  googlePlaceId?: string;
+}
+
+interface ApiShopItem {
+  _id: string;
+  shopName: string;
+  ownerName: string;
+  shopType?: string;
+  category?: string;
+  slug?: string;
+  verificationStatus?: string;
+  verification_status?: string;
+  claimStatus?: string;
+  claim_status?: string;
+  description?: string;
+  banner?: string;
+  address?: Record<string, any>;
+  phone: string;
+  isOpen: boolean;
+  rating: number;
+  totalOrders: number;
+  totalRevenue: number;
+  commissionRate?: number;
+  image?: string;
+  status: string;
+  eta?: string;
+  packagingCharge?: number;
+  gstEnabled?: boolean;
+  gstRate?: number;
+  googleBusinessUrl?: string;
+  google_business_url?: string;
+  googlePlaceId?: string;
+}
+
+export function mapApiShop(s: ApiShopItem): ShopListing {
+  const addr = s.address ?? {};
+  const latVal = typeof addr.lat === 'number' ? addr.lat : (typeof addr.latitude === 'number' ? addr.latitude : undefined);
+  const lngVal = typeof addr.lng === 'number' ? addr.lng : (typeof addr.longitude === 'number' ? addr.longitude : undefined);
+
+  return {
+    id: s._id,
+    storeName: s.shopName,
+    ownerName: s.ownerName,
+    category: s.category || s.shopType || "",
+    shopType: s.shopType || s.category || "",
+    slug: s.slug || undefined,
+    verificationStatus: s.verificationStatus || s.verification_status || "pending",
+    claimStatus: s.claimStatus || s.claim_status || "claimed",
+    description: s.description || "",
+    banner: s.banner || undefined,
+    city: addr.city ?? "",
+    pincode: addr.pincode ?? "",
+    phone: s.phone,
+    isOpen: s.isOpen ?? false,
+    rating: s.rating ?? 0,
+    totalOrders: s.totalOrders ?? 0,
+    totalRevenue: s.totalRevenue ?? 0,
+    commissionRate: s.commissionRate ?? 5,
+    image: s.image || `/assets/cat-${s.shopType || "grocery"}.png`,
+    status: s.status,
+    eta: s.eta ?? "",
+    packagingCharge: s.packagingCharge ?? undefined,
+    gstEnabled: s.gstEnabled ?? false,
+    gstRate: s.gstRate ?? undefined,
+    address: addr,
+    lat: latVal,
+    lng: lngVal,
+    googleBusinessUrl: s.googleBusinessUrl || s.google_business_url || undefined,
+    googlePlaceId: s.googlePlaceId || undefined,
+  };
+}
+
+interface ShopsContextType {
+  shops: ShopListing[];
+  allShops: ShopListing[];
+  isLoading: boolean;
+  error: string | null;
+  refetch: () => void;
+  getShopById: (id: string) => ShopListing | undefined;
+}
+
+export const ShopsContext = createContext<ShopsContextType | null>(null);
+
+// Refresh at most every 5 minutes in the background when the tab is visible.
+const BG_INTERVAL_MS = 300_000;
+
+export function ShopsProvider({ children }: { children: React.ReactNode }) {
+  const auth = useContext(AuthContext);
+  const authLoading = auth?.isLoading ?? true;
+  const userId = auth?.user?.id ?? null;
+
+  const [allShops, setAllShops] = useState<ShopListing[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Track whether a request is already in-flight to avoid concurrent fetches.
+  const inFlight = useRef(false);
+  const lastFetchedAt = useRef(0);
+  // undefined = auth hasn't resolved yet (first resolution), string|null = known userId
+  const prevUserIdRef = useRef<string | null | undefined>(undefined);
+
+  const fetchShops = useCallback((showLoading = false) => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    if (showLoading) setIsLoading(true);
+    setError(null);
+    api.get<{ success: boolean; shops: ApiShopItem[] }>("/shops?status=approved&limit=100")
+      .then(d => {
+        setAllShops(d.shops.map(mapApiShop));
+        lastFetchedAt.current = Date.now();
+      })
+      .catch(err => {
+        const msg = err instanceof Error ? err.message : "Failed to load shops";
+        setError(msg.includes("buffering") ? "Database connecting…" : msg);
+      })
+      .finally(() => {
+        inFlight.current = false;
+        if (showLoading) setIsLoading(false);
+      });
+  }, []);
+
+  // Fetch on mount immediately.
+  useEffect(() => {
+    fetchShops(true);
+  }, [fetchShops]);
+
+  // Refetch when the logged-in user changes (login / logout).
+  // On first auth resolution, skip if the mount fetch already ran within 10 s
+  // (prevents the double-fetch: mount fires immediately, then auth resolves ~200 ms later).
+  useEffect(() => {
+    if (authLoading) return;
+    const isFirstResolution = prevUserIdRef.current === undefined;
+    const userChanged = prevUserIdRef.current !== userId;
+    prevUserIdRef.current = userId;
+    if (isFirstResolution) {
+      if (Date.now() - lastFetchedAt.current < 10_000) return; // mount already fetched
+    } else if (!userChanged) {
+      return; // spurious re-render — userId unchanged
+    }
+    fetchShops(false);
+  }, [userId, authLoading, fetchShops]);
+
+  // Background safety interval — only fires when the tab is visible and stale.
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible" && Date.now() - lastFetchedAt.current > 300_000) {
+        fetchShops(false);
+      }
+    }, BG_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [fetchShops]);
+
+  // Refetch when the user switches back to this tab after being away (if stale > 5 min).
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        if (Date.now() - lastFetchedAt.current > 300_000) {
+          fetchShops(false);
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [fetchShops]);
+
+function normalizeCity(str: string): string {
+  if (!str) return "";
+  const lower = str.toLowerCase();
+  if (lower.includes("balurghat") || lower.includes("dinajpur") || lower.includes("733101") || lower.includes("733102") || lower.includes("733103")) {
+    return "balurghat";
+  }
+  return lower.split(/[,(\-\d]/)[0].trim();
+}
+
+  // City-based filtering — when the user has picked a delivery address, only show
+  // shops that serve that city. allShops stays full so lookups (getShopById) still work.
+  const selectedCityRaw = (auth?.selectedDeliveryAddress?.city ?? auth?.selectedDeliveryAddress?.line1 ?? "").trim();
+  const normalizedSelectedCity = useMemo(() => normalizeCity(selectedCityRaw), [selectedCityRaw]);
+
+  const shops = useMemo(() => {
+    const activeCity = normalizedSelectedCity || "balurghat";
+    const filtered = allShops.filter(s => {
+      const sc = normalizeCity(s.city || "balurghat");
+      return sc === activeCity;
+    });
+    return filtered.length > 0 ? filtered : allShops;
+  }, [allShops, normalizedSelectedCity]);
+
+  const getShopById = (id: string) => allShops.find(s => s.id === id);
+
+  return (
+    <ShopsContext.Provider value={{ shops, allShops, isLoading, error, refetch: fetchShops, getShopById }}>
+      {children}
+    </ShopsContext.Provider>
+  );
+}
